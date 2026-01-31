@@ -1,0 +1,24 @@
+# Ultralytics BotSORT tracker (Stable, GMC OFF)
+
+tracker_type: botsort
+
+# --- Detection thresholds ---
+track_high_thresh: 0.20
+track_low_thresh: 0.05
+new_track_thresh: 0.30
+
+# --- Track buffer ---
+track_buffer: 20
+
+# --- Matching ---
+match_thresh: 0.7
+fuse_score: false
+
+# --- 🔥 핵심: GMC 완전 비활성화 ---
+gmc_method: none
+
+# --- ReID (비활성, 안정성 우선) ---
+with_reid: True
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+model: auto

@@ -1,0 +1,19 @@
+# Ignore runtime / editor / build artifacts
+runs/
+build/
+dist/
+.vscode/
+
+# Python artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# virtualenv
+.venv/
+env/
+venv/
+
+# Large database/output files (too large for GitHub)
+output/
+*.sqlite
