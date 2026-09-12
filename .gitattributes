@@ -1,0 +1,17 @@
+# 줄바꿈은 LF로 고정한다.
+# 같은 코드를 Windows GUI와 Colab(리눅스)에서 함께 쓰기 때문에,
+# 체크아웃 때 CRLF로 바뀌면 diff 전체가 변경으로 잡힌다.
+* text=auto eol=lf
+
+# 바이너리: 줄바꿈 변환 대상이 아니다.
+*.pt binary
+*.onnx binary
+*.engine binary
+*.sqlite binary
+*.xlsx binary
+*.png binary
+*.jpg binary
+*.mp4 binary
+
+# 노트북은 diff가 커서 리뷰가 어렵다는 점만 표시해 둔다.
+*.ipynb -diff

@@ -1,0 +1,10 @@
+{
+  "person": "ignore",
+  "passenger_car": "승용차",
+  "small_bus": "소형버스",
+  "large_bus": "대형버스",
+  "small_truck": "소형화물",
+  "medium_truck": "중형화물",
+  "etc": "대형화물",
+  "large_truck": "대형화물"
+}

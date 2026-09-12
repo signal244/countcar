@@ -1,0 +1,26 @@
+# Ignore runtime / editor / build artifacts
+runs/
+build/
+dist/
+.vscode/
+
+# Python artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# virtualenv
+.venv/
+env/
+venv/
+
+# Large database/output files (too large for GitHub)
+output/
+*.sqlite
+*.pt
+
+# Local GUI/runtime preferences
+config/user_state.json
+# 모델 클래스 캐시 + 차종 선택. 모델 파일 지문(크기/수정시각)이 PC마다 달라
+# 커밋하면 매번 충돌성 변경이 생긴다. 없으면 기본값으로 자동 생성된다.
+config/model_profiles.json

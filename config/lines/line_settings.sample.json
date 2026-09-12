@@ -1,0 +1,14 @@
+{
+  "line_set_id": "sample",
+  "lines": [
+    {
+      "id": "line_1",
+      "points": [[200, 540], [960, 540], [1720, 540]],
+      "bound": "north_bound",
+      "in_point": [960, 720]
+    }
+  ],
+  "roi": [],
+  "image_width": 1920,
+  "image_height": 1080
+}

@@ -1,0 +1,23 @@
+# Ultralytics BoT-SORT Optimized for Intersection
+tracker_type: botsort
+
+# --- Detection thresholds ---
+track_high_thresh: 0.35    # 상향: 확실한 검출물 위주로 추적
+track_low_thresh: 0.1      # 상향: 너무 낮은 신뢰도의 노이즈 배제
+new_track_thresh: 0.45     # 상향: 새 ID 생성 조건 강화
+
+# --- Track buffer ---
+track_buffer: 90           # 대폭 상향: 3초(30fps 기준) 동안 가려져도 ID 유지
+
+# --- Matching ---
+match_thresh: 0.8          # 소폭 상향: 매칭 유연성 확보
+fuse_score: true           # 변경: 검출 점수를 매칭에 반영하여 정확도 향상
+
+# --- GMC ---
+gmc_method: none           # 고정 카메라라면 none 유지 (잘하셨습니다)
+
+# --- ReID ---
+with_reid: True
+proximity_thresh: 0.5
+appearance_thresh: 0.55    # 하향: 외형 정보를 더 적극적으로 반영 (ID 복구용)
+model: auto
