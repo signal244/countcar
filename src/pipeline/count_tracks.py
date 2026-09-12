@@ -8,6 +8,7 @@ Steps:
 """
 
 import argparse
+import bisect
 import json
 import sqlite3
 from contextlib import closing
@@ -908,8 +909,6 @@ def count_track_trajs_streaming(
 
         parent_sorted = sorted(parents, key=lambda t: end_ts_by_tid.get(t, -1e18))
         parent_end_ts = [end_ts_by_tid.get(t, -1e18) for t in parent_sorted]
-
-        import bisect
 
         merged = 0
         used_parents: set[str] = set()

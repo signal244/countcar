@@ -1,4 +1,4 @@
-# Copilot instructions for Count Car Ver5.5
+# Copilot instructions for Count Car Ver6.0
 
 ## Architecture
 

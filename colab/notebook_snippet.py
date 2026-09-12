@@ -123,7 +123,7 @@ CHECKPOINT_ENABLED = True
 CHECKPOINT_MIN_SECONDS = 60  # 너무 자주 저장되는 것 방지(최소 간격)
 
 # 1) 경로 설정
-ROOT = Path("/content/drive/MyDrive/vm/count_car_ver5.5")
+ROOT = Path("/content/drive/MyDrive/vm/count_car_ver6.0")
 DRIVE_VIDEO = Path(f"/content/drive/MyDrive/video/{PROJECT_NAME}/{VIDEO_FILENAME}")
 print("VIDEO(Drive):", DRIVE_VIDEO, "exists:", DRIVE_VIDEO.exists())
 

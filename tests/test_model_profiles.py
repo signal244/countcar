@@ -139,18 +139,18 @@ class ProfileStoreTests(unittest.TestCase):
 
 
 class ColabExportTests(unittest.TestCase):
-    ROOT = r"g:\내 드라이브\vm\count_car_ver5.5"
+    ROOT = r"g:\내 드라이브\vm\count_car_ver6.0"
 
     def test_relative_path_resolves_against_project_root(self) -> None:
         self.assertEqual(
             to_colab_path("config/lines/설창리.json", self.ROOT),
-            "/content/drive/MyDrive/vm/count_car_ver5.5/config/lines/설창리.json",
+            "/content/drive/MyDrive/vm/count_car_ver6.0/config/lines/설창리.json",
         )
 
     def test_windows_drive_path_is_converted(self) -> None:
         self.assertEqual(
-            to_colab_path(r"G:\내 드라이브\vm\count_car_ver5.5\models\best.pt", self.ROOT),
-            "/content/drive/MyDrive/vm/count_car_ver5.5/models/best.pt",
+            to_colab_path(r"G:\내 드라이브\vm\count_car_ver6.0\models\best.pt", self.ROOT),
+            "/content/drive/MyDrive/vm/count_car_ver6.0/models/best.pt",
         )
 
     def test_existing_colab_path_is_left_alone(self) -> None:

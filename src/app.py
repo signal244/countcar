@@ -198,7 +198,8 @@ class VehiclePreviewWindow(QWidget):
         self.video_label.setMinimumSize(self._disp_w, self._disp_h)
         self._writer = None
 
-        self._timer.start(1)
+        interval_ms = max(1, int(1000 / self._fps))
+        self._timer.start(interval_ms)
 
     def _pause(self) -> None:
         self._paused = True
@@ -212,10 +213,7 @@ class VehiclePreviewWindow(QWidget):
     def _process_frame(self) -> None:
         if self._paused or self._cap is None or self._model is None:
             return
-        try:
-            import cv2  # local import (env may vary)
-        except Exception:
-            return
+        import cv2  # already validated in _init_pipeline
 
         success, frame = self._cap.read()
         if not success or frame is None:
@@ -293,7 +291,7 @@ class VehiclePreviewWindow(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("차량 교통량 카운팅(v5)")
+        self.setWindowTitle("차량 교통량 카운팅(v6.0)")
         # Keep the initial window wide enough for long path inputs.
         self.resize(int(1050 * UI_SCALE), int(700 * UI_SCALE))
 
@@ -553,9 +551,8 @@ class MainWindow(QMainWindow):
         safe = self._safe_filename(junction_name)
         return Path("output/db_snapshots") / f"tracks_{safe}.sqlite"
 
-    def _suggest_detect_db_path_for_junction(self, junction_name: str) -> Path:
-        safe = self._safe_filename(junction_name)
-        return Path("output/db_snapshots") / f"tracks_{safe}.sqlite"
+    # 별칭: 감지/카운트 양쪽에서 동일 경로 사용
+    _suggest_detect_db_path_for_junction = _suggest_db_path_for_junction
 
     def _maybe_update_count_db_path_from_junction(self) -> None:
         """Suggest a default count DB path under output/db_snapshots."""

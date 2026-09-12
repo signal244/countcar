@@ -12,7 +12,7 @@
 
 경로 규칙:
 - 원본 영상: /content/drive/MyDrive/video/<project>/<junction> <session>.mp4
-- BEV 설정: /content/drive/MyDrive/vm/count_car_ver5.5/config/bev/<junction>.json
+- BEV 설정: /content/drive/MyDrive/vm/count_car_ver6.0/config/bev/<junction>.json
 - 출력 영상: 원본 영상 폴더에 <원본파일명>_bev.mp4
 """
 
@@ -97,7 +97,7 @@ def main() -> None:
         flush=True,
     )
 
-    root = Path("/content/drive/MyDrive/vm/count_car_ver5.5")
+    root = Path("/content/drive/MyDrive/vm/count_car_ver6.0")
     drive_video = Path(f"/content/drive/MyDrive/video/{ENV_PROJECT_NAME}/{ENV_JUNCTION_NAME} {ENV_SESSION_NAME}.mp4")
     drive_bev_json = root / "config" / "bev" / f"{_safe_filename(ENV_JUNCTION_NAME)}.json"
     drive_bev_video = drive_video.with_name(f"{drive_video.stem}_bev.mp4")

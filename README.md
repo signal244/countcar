@@ -1,4 +1,4 @@
-# Count Car Ver5.5
+# Count Car Ver6.0
 
 영상에서 차량을 탐지·추적하여 SQLite에 저장하고, 분석라인 교차 결과를 시간대·방향·차종별 Excel/CSV로 집계하는 프로그램입니다.
 
