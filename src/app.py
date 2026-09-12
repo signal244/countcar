@@ -1,4 +1,6 @@
 ﻿import json
+import re
+import sqlite3
 import sys
 import traceback
 import shutil
@@ -882,18 +884,12 @@ class MainWindow(QMainWindow):
         images_dir = extract_root / "images"
         images_dir.mkdir(parents=True, exist_ok=True)
 
-        try:
-            import re
-        except Exception:
-            re = None  # type: ignore
-
         junction_raw = self.junction_input.text().strip() if hasattr(self, "junction_input") else ""
         session_raw = self.session_input.text().strip() if hasattr(self, "session_input") else ""
         junction_safe = self._safe_filename(junction_raw) if junction_raw else ""
         session_safe = self._safe_filename(session_raw) if session_raw else ""
-        if re is not None:
-            junction_safe = re.sub(r"\s+", "_", junction_safe)
-            session_safe = re.sub(r"\s+", "_", session_safe)
+        junction_safe = re.sub(r"\s+", "_", junction_safe)
+        session_safe = re.sub(r"\s+", "_", session_safe)
         if junction_safe and session_safe:
             prefix = f"{junction_safe}_{session_safe}"
         else:
@@ -949,7 +945,6 @@ class MainWindow(QMainWindow):
         # Resume numbering if files already exist.
         start_idx = 1
         try:
-            import re
             pat = re.compile(rf"^{re.escape(prefix)}_(\d{{6}})\.jpg$", re.IGNORECASE)
             max_idx = 0
             for p_img in images_dir.glob(f"{prefix}_*.jpg"):
@@ -1504,8 +1499,6 @@ class MainWindow(QMainWindow):
             db_path = Path(self.count_db_input.text().strip() or "output/tracks.sqlite")
             if not db_path.exists():
                 return
-            import sqlite3
-
             with sqlite3.connect(db_path) as conn:
                 sessions_set: set[str] = set()
                 for table in ("track_trajs", "tracks"):
@@ -1590,8 +1583,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "DB 없음", f"DB 파일을 찾을 수 없습니다:\n{db_path}")
             return
         try:
-            import sqlite3
-
             with sqlite3.connect(db_path) as conn:
                 cur = conn.cursor()
                 cur.execute("DELETE FROM track_trajs WHERE session_id = ?", (session_id,))
@@ -1815,7 +1806,10 @@ class MainWindow(QMainWindow):
                 return str(value)
         return None
 
-    def on_count(self) -> None:
+    def _run_count_common(self, mode: str) -> None:
+        """교차로(turn) / 접근로(approach) 카운팅 공통 로직."""
+        label = "교차로" if mode == "turn" else "접근로"
+        tag = "count" if mode == "turn" else "approach"
         overrides_count = self._build_count_overrides()
         db_path = Path(overrides_count["count_db_path"] or "output/tracks.sqlite")
         lines_path = Path(overrides_count["count_lines_path"] or "config/lines.json")
@@ -1826,25 +1820,25 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Lines JSON 없음", f"lines.json 파일을 찾을 수 없습니다:\n{lines_path}")
             return
         try:
-            self.log_view.append(f"[count] db={db_path}")
-            self.log_view.append(f"[count] lines={lines_path}")
+            self.log_view.append(f"[{tag}] db={db_path}")
+            self.log_view.append(f"[{tag}] lines={lines_path}")
             analysis_basis = str(overrides_count.get("count_analysis_basis") or "original")
             use_postprocess = analysis_basis == "postprocess"
             basis_label = "후처리" if use_postprocess else "원본"
-            self.log_view.append(f"[count] basis={basis_label}")
+            self.log_view.append(f"[{tag}] basis={basis_label}")
             session_sel = None
             if hasattr(self, "count_session_combo"):
                 sel = self.count_session_combo.currentText().strip()
                 session_sel = None if sel in ("", "(전체)") else sel
             if session_sel:
-                self.log_view.append(f"[count] session_id={session_sel}")
+                self.log_view.append(f"[{tag}] session_id={session_sel}")
             filename_prefix = self._build_count_filename_prefix(session_sel=session_sel)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             out_dir = Path(overrides_count.get("count_output_dir") or "").expanduser()
             if not str(out_dir).strip():
                 out_dir = db_path.parent
             out_dir.mkdir(parents=True, exist_ok=True)
-            out_xlsx = out_dir / f"{filename_prefix}_교차로_{basis_label}_{stamp}.xlsx"
+            out_xlsx = out_dir / f"{filename_prefix}_{label}_{basis_label}_{stamp}.xlsx"
             out, counts_df = run_count(
                 db_path=db_path,
                 lines_path=lines_path,
@@ -1857,81 +1851,28 @@ class MainWindow(QMainWindow):
                 out_xlsx=out_xlsx,
                 resize=None,
                 session_id=session_sel,
-                mode="turn",
+                mode=mode,
                 log_cb=self.log_view.append,
                 use_track_merge=use_postprocess,
                 use_virtual_events=use_postprocess,
                 class_mapping=overrides_count.get("count_class_mapping") or None,
                 class_columns=overrides_count.get("count_class_columns") or None,
             )
-            self.log_view.append(f"교차로 카운팅 완료({basis_label}): {out}")
+            self.log_view.append(f"{label} 카운팅 완료({basis_label}): {out}")
             try:
                 self.log_view.append(f"집계 건수: {len(counts_df)}")
             except Exception:
                 pass
         except Exception as exc:  # noqa: BLE001
-            self.log_view.append("[count] ERROR")
+            self.log_view.append(f"[{tag}] ERROR")
             self.log_view.append(traceback.format_exc())
-            QMessageBox.critical(self, "교차로 카운팅 실패", str(exc))
+            QMessageBox.critical(self, f"{label} 카운팅 실패", str(exc))
+
+    def on_count(self) -> None:
+        self._run_count_common("turn")
 
     def on_count_approach(self) -> None:
-        overrides_count = self._build_count_overrides()
-        db_path = Path(overrides_count["count_db_path"] or "output/tracks.sqlite")
-        lines_path = Path(overrides_count["count_lines_path"] or "config/lines.json")
-        if not db_path.exists():
-            QMessageBox.warning(self, "DB 없음", f"DB 파일을 찾을 수 없습니다:\n{db_path}")
-            return
-        if not lines_path.exists():
-            QMessageBox.warning(self, "Lines JSON 없음", f"lines.json 파일을 찾을 수 없습니다:\n{lines_path}")
-            return
-        try:
-            self.log_view.append(f"[approach] db={db_path}")
-            self.log_view.append(f"[approach] lines={lines_path}")
-            analysis_basis = str(overrides_count.get("count_analysis_basis") or "original")
-            use_postprocess = analysis_basis == "postprocess"
-            basis_label = "후처리" if use_postprocess else "원본"
-            self.log_view.append(f"[approach] basis={basis_label}")
-            session_sel = None
-            if hasattr(self, "count_session_combo"):
-                sel = self.count_session_combo.currentText().strip()
-                session_sel = None if sel in ("", "(전체)") else sel
-            if session_sel:
-                self.log_view.append(f"[approach] session_id={session_sel}")
-            filename_prefix = self._build_count_filename_prefix(session_sel=session_sel)
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            out_dir = Path(overrides_count.get("count_output_dir") or "").expanduser()
-            if not str(out_dir).strip():
-                out_dir = db_path.parent
-            out_dir.mkdir(parents=True, exist_ok=True)
-            out_xlsx = out_dir / f"{filename_prefix}_접근로_{basis_label}_{stamp}.xlsx"
-            out, counts_df = run_count(
-                db_path=db_path,
-                lines_path=lines_path,
-                interval_min=int(overrides_count["count_interval_minutes"]),
-                reconnect_dist=float(overrides_count["count_reconnect_dist"]),
-                reconnect_gap=float(overrides_count["count_reconnect_gap"]),
-                reconnect_passes=int(overrides_count["count_reconnect_passes"]),
-                extrap_horizon=float(overrides_count["count_extrap_horizon"]),
-                out_csv=None,
-                out_xlsx=out_xlsx,
-                resize=None,
-                session_id=session_sel,
-                mode="approach",
-                log_cb=self.log_view.append,
-                use_track_merge=use_postprocess,
-                use_virtual_events=use_postprocess,
-                class_mapping=overrides_count.get("count_class_mapping") or None,
-                class_columns=overrides_count.get("count_class_columns") or None,
-            )
-            self.log_view.append(f"접근로 카운팅 완료({basis_label}): {out}")
-            try:
-                self.log_view.append(f"집계 건수: {len(counts_df)}")
-            except Exception:
-                pass
-        except Exception as exc:  # noqa: BLE001
-            self.log_view.append("[approach] ERROR")
-            self.log_view.append(traceback.format_exc())
-            QMessageBox.critical(self, "접근로 카운팅 실패", str(exc))
+        self._run_count_common("approach")
 
     def on_run(self) -> None:
         if self.worker and self.worker.isRunning():
