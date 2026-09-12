@@ -1,5 +1,5 @@
-from pathlib import logging
-import Path
+import logging
+from pathlib import Path
 from typing import Tuple
 
 
