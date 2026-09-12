@@ -1,3 +1,4 @@
+import logging
 import os
 from typing import Optional
 
@@ -12,9 +13,12 @@ def detect_device() -> str:
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "mps"
     except Exception:
-        pass
+        logger.debug("Suppressed error", exc_info=True)
     return "cpu"
 
+
+
+logger = logging.getLogger(__name__)
 
 def resolve_device(cfg_device: Optional[str] = None) -> str:
     """

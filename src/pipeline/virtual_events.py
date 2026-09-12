@@ -1,3 +1,4 @@
+import logging
 import math
 import sqlite3
 from contextlib import closing
@@ -16,6 +17,9 @@ EXTRAP_POST_SOURCE_MAX_POINTS = 12
 EXTRAP_FORWARD_MIN_COS = 0.65
 EXTRAP_TAIL_POINTS = 20
 
+
+
+logger = logging.getLogger(__name__)
 
 def _line_segments(points: List) -> List[Tuple[Tuple[float, float], Tuple[float, float]]]:
     out: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
@@ -159,7 +163,7 @@ def _line_in_normal(points: List, bound: str, in_point: Optional[object] = None)
                 nx, ny = (-nx, -ny)
             return (float(nx), float(ny))
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
     inx, iny = _bound_in_dir(bound)
     if (inx, iny) != (0.0, 0.0):
         return (float(inx), float(iny))

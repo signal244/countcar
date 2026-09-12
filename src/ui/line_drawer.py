@@ -1,3 +1,4 @@
+import logging
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -24,6 +25,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+
+
+logger = logging.getLogger(__name__)
 
 def cvimg_to_pixmap(frame) -> Optional[QPixmap]:
     if frame is None:
@@ -200,7 +204,7 @@ class LineDrawerWindow(QMainWindow):
                     "라인 좌표는 '원본 크기' 기준으로 저장됩니다."
                 )
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
 
     def _load_json(self) -> None:
         try:
@@ -266,7 +270,7 @@ class LineDrawerWindow(QMainWindow):
             try:
                 self.scene.removeItem(item)
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
         self._pending_item_refs = []
 
     def _redraw_pending_polyline(self) -> None:
@@ -325,7 +329,7 @@ class LineDrawerWindow(QMainWindow):
         try:
             super(QGraphicsView, self.view).mouseDoubleClickEvent(event)
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
 
     def _add_line_from_points(self) -> None:
         if len(self.current_points) < 2:

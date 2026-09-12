@@ -1,4 +1,5 @@
 ﻿import json
+import logging
 import re
 import sqlite3
 import sys
@@ -54,6 +55,8 @@ from src.ui.video_selector import select_video
 from src.ui.trajectory_viewer2 import TrajectoryViewer2Window
 
 
+logger = logging.getLogger(__name__)
+
 UI_SCALE = 1.35
 
 
@@ -90,6 +93,35 @@ class PipelineWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class CountWorker(QThread):
+    """백그라운드에서 카운팅을 실행하여 GUI 멈춤을 방지한다."""
+    log_message = Signal(str)
+    finished_ok = Signal(str, str)  # (label, output_path)
+    failed = Signal(str, str)       # (label, error_message)
+
+    def __init__(self, kwargs: Dict, mode: str, label: str):
+        super().__init__()
+        self._kwargs = kwargs
+        self._mode = mode
+        self._label = label
+
+    def run(self) -> None:
+        try:
+            out, counts_df = run_count(
+                log_cb=self.log_message.emit,
+                mode=self._mode,
+                **self._kwargs,
+            )
+            count_info = ""
+            try:
+                count_info = f"\n집계 건수: {len(counts_df)}"
+            except Exception:
+                logger.debug("Suppressed error", exc_info=True)
+            self.finished_ok.emit(self._label, f"{out}{count_info}")
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(self._label, str(exc))
+
+
 class VehiclePreviewWindow(QWidget):
     def __init__(self, video_path: Path, model_path: Path | str, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -98,7 +130,7 @@ class VehiclePreviewWindow(QWidget):
         try:
             self.setWindowFlag(Qt.Window, True)
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
         self.video_path = video_path
         self.model_path = str(model_path)
         self._paused = False
@@ -131,7 +163,7 @@ class VehiclePreviewWindow(QWidget):
                     int(geo.y() + (geo.height() - self.height()) / 2),
                 )
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
         self._init_pipeline()
 
     def _build_ui(self) -> None:
@@ -237,7 +269,7 @@ class VehiclePreviewWindow(QWidget):
                 mask = results[0].boxes.cls != 0
                 results[0].boxes = results[0].boxes[mask]
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
 
         annotated = frame.copy()
         if results and results[0].boxes is not None:
@@ -263,7 +295,7 @@ class VehiclePreviewWindow(QWidget):
                 try:
                     self._writer.release()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed error", exc_info=True)
                 self._writer = None
         rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
@@ -276,17 +308,17 @@ class VehiclePreviewWindow(QWidget):
         try:
             self._timer.stop()
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
         try:
             if self._cap is not None:
                 self._cap.release()
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
         try:
             if self._writer is not None:
                 self._writer.release()
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
         super().closeEvent(event)
 
 
@@ -340,7 +372,7 @@ class MainWindow(QMainWindow):
                 worker.requestInterruption()
                 worker.wait(int(wait_ms))
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
         if worker.isRunning():
             return False
         if self.worker is worker:
@@ -385,7 +417,7 @@ class MainWindow(QMainWindow):
                     event.ignore()
                     return
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
 
         if not self._close_child_windows():
             QMessageBox.warning(self, "종료 지연", "하위 창의 백그라운드 작업이 아직 종료되지 않았습니다. 잠시 후 다시 시도하세요.")
@@ -395,7 +427,7 @@ class MainWindow(QMainWindow):
         try:
             self._save_config()
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
         if not self._stop_worker():
             QMessageBox.warning(self, "종료 지연", "백그라운드 작업이 아직 종료되지 않았습니다. 잠시 후 다시 시도하세요.")
             event.ignore()
@@ -412,7 +444,7 @@ class MainWindow(QMainWindow):
         try:
             self.log_view.append(str(msg))
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
 
     def _on_pipeline_done(self) -> None:
         self._append_log("파이프라인 완료.")
@@ -437,7 +469,7 @@ class MainWindow(QMainWindow):
         try:
             self._maybe_update_count_db_path_from_junction()
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
         main_layout.addLayout(self._buttons_row())
         log_box = self._log_box()
         main_layout.addWidget(log_box, stretch=1)
@@ -512,7 +544,7 @@ class MainWindow(QMainWindow):
             self.junction_input.textChanged.connect(self._maybe_update_count_db_path_from_junction)
             self.junction_input.textChanged.connect(self._maybe_update_detect_db_path_from_junction)
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
         self._refresh_db_sessions()
         return box
 
@@ -576,7 +608,7 @@ class MainWindow(QMainWindow):
             try:
                 self._refresh_db_sessions()
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
 
     def _maybe_update_detect_db_path_from_junction(self) -> None:
         """Suggest a default detection DB path under output/db_snapshots."""
@@ -665,7 +697,7 @@ class MainWindow(QMainWindow):
         try:
             self.db_path_input.editingFinished.connect(lambda: setattr(self, "_detect_db_user_set", True))
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
 
         # Tracker type (botsort / bytetrack)
         self.tracker_combo = QComboBox()
@@ -750,7 +782,7 @@ class MainWindow(QMainWindow):
             self.count_db_input.editingFinished.connect(self._refresh_db_sessions)
             self.count_db_input.editingFinished.connect(lambda: setattr(self, "_count_db_user_set", True))
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
 
         # Interval / reconnect / extrap
         self.count_interval_combo = QComboBox()
@@ -958,7 +990,7 @@ class MainWindow(QMainWindow):
             if max_idx > 0:
                 start_idx = max_idx + 1
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
 
         def log(msg: str) -> None:
             try:
@@ -968,6 +1000,7 @@ class MainWindow(QMainWindow):
                 if app is not None:
                     app.processEvents()
             except Exception:
+                logger.debug("Suppressed error", exc_info=True)
                 return
 
         log(
@@ -1540,9 +1573,10 @@ class MainWindow(QMainWindow):
                 if self.count_session_combo.count() > 0:
                     self.count_session_combo.setItemText(0, "(전체)")
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
             self.count_session_combo.blockSignals(False)
         except Exception:
+            logger.debug("Suppressed error", exc_info=True)
             return
 
     def _delete_selected_session(self) -> None:
@@ -1597,7 +1631,7 @@ class MainWindow(QMainWindow):
                         p.unlink(missing_ok=True)
                     deleted_files += 1
                 except Exception:
-                    pass
+                    logger.debug("Suppressed error", exc_info=True)
             self.log_view.append(f"[session] deleted: {session_id}")
             if deleted_files:
                 self.log_view.append(f"[session] related files deleted: {deleted_files}")
@@ -1807,7 +1841,11 @@ class MainWindow(QMainWindow):
         return None
 
     def _run_count_common(self, mode: str) -> None:
-        """교차로(turn) / 접근로(approach) 카운팅 공통 로직."""
+        """교차로(turn) / 접근로(approach) 카운팅을 백그라운드 스레드에서 실행."""
+        if getattr(self, "_count_worker", None) and self._count_worker.isRunning():
+            QMessageBox.information(self, "실행 중", "카운팅이 이미 실행 중입니다.")
+            return
+
         label = "교차로" if mode == "turn" else "접근로"
         tag = "count" if mode == "turn" else "approach"
         overrides_count = self._build_count_overrides()
@@ -1819,54 +1857,60 @@ class MainWindow(QMainWindow):
         if not lines_path.exists():
             QMessageBox.warning(self, "Lines JSON 없음", f"lines.json 파일을 찾을 수 없습니다:\n{lines_path}")
             return
-        try:
-            self.log_view.append(f"[{tag}] db={db_path}")
-            self.log_view.append(f"[{tag}] lines={lines_path}")
-            analysis_basis = str(overrides_count.get("count_analysis_basis") or "original")
-            use_postprocess = analysis_basis == "postprocess"
-            basis_label = "후처리" if use_postprocess else "원본"
-            self.log_view.append(f"[{tag}] basis={basis_label}")
-            session_sel = None
-            if hasattr(self, "count_session_combo"):
-                sel = self.count_session_combo.currentText().strip()
-                session_sel = None if sel in ("", "(전체)") else sel
-            if session_sel:
-                self.log_view.append(f"[{tag}] session_id={session_sel}")
-            filename_prefix = self._build_count_filename_prefix(session_sel=session_sel)
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            out_dir = Path(overrides_count.get("count_output_dir") or "").expanduser()
-            if not str(out_dir).strip():
-                out_dir = db_path.parent
-            out_dir.mkdir(parents=True, exist_ok=True)
-            out_xlsx = out_dir / f"{filename_prefix}_{label}_{basis_label}_{stamp}.xlsx"
-            out, counts_df = run_count(
-                db_path=db_path,
-                lines_path=lines_path,
-                interval_min=int(overrides_count["count_interval_minutes"]),
-                reconnect_dist=float(overrides_count["count_reconnect_dist"]),
-                reconnect_gap=float(overrides_count["count_reconnect_gap"]),
-                reconnect_passes=int(overrides_count["count_reconnect_passes"]),
-                extrap_horizon=float(overrides_count["count_extrap_horizon"]),
-                out_csv=None,
-                out_xlsx=out_xlsx,
-                resize=None,
-                session_id=session_sel,
-                mode=mode,
-                log_cb=self.log_view.append,
-                use_track_merge=use_postprocess,
-                use_virtual_events=use_postprocess,
-                class_mapping=overrides_count.get("count_class_mapping") or None,
-                class_columns=overrides_count.get("count_class_columns") or None,
-            )
-            self.log_view.append(f"{label} 카운팅 완료({basis_label}): {out}")
-            try:
-                self.log_view.append(f"집계 건수: {len(counts_df)}")
-            except Exception:
-                pass
-        except Exception as exc:  # noqa: BLE001
-            self.log_view.append(f"[{tag}] ERROR")
-            self.log_view.append(traceback.format_exc())
-            QMessageBox.critical(self, f"{label} 카운팅 실패", str(exc))
+
+        analysis_basis = str(overrides_count.get("count_analysis_basis") or "original")
+        use_postprocess = analysis_basis == "postprocess"
+        basis_label = "후처리" if use_postprocess else "원본"
+        session_sel = None
+        if hasattr(self, "count_session_combo"):
+            sel = self.count_session_combo.currentText().strip()
+            session_sel = None if sel in ("", "(전체)") else sel
+
+        self.log_view.append(f"[{tag}] db={db_path}")
+        self.log_view.append(f"[{tag}] lines={lines_path}")
+        self.log_view.append(f"[{tag}] basis={basis_label}")
+        if session_sel:
+            self.log_view.append(f"[{tag}] session_id={session_sel}")
+
+        filename_prefix = self._build_count_filename_prefix(session_sel=session_sel)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = Path(overrides_count.get("count_output_dir") or "").expanduser()
+        if not str(out_dir).strip():
+            out_dir = db_path.parent
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_xlsx = out_dir / f"{filename_prefix}_{label}_{basis_label}_{stamp}.xlsx"
+
+        kwargs = dict(
+            db_path=db_path,
+            lines_path=lines_path,
+            interval_min=int(overrides_count["count_interval_minutes"]),
+            reconnect_dist=float(overrides_count["count_reconnect_dist"]),
+            reconnect_gap=float(overrides_count["count_reconnect_gap"]),
+            reconnect_passes=int(overrides_count["count_reconnect_passes"]),
+            extrap_horizon=float(overrides_count["count_extrap_horizon"]),
+            out_csv=None,
+            out_xlsx=out_xlsx,
+            resize=None,
+            session_id=session_sel,
+            use_track_merge=use_postprocess,
+            use_virtual_events=use_postprocess,
+            class_mapping=overrides_count.get("count_class_mapping") or None,
+            class_columns=overrides_count.get("count_class_columns") or None,
+        )
+
+        self._count_worker = CountWorker(kwargs, mode, f"{label}({basis_label})")
+        self._count_worker.log_message.connect(self.log_view.append)
+        self._count_worker.finished_ok.connect(self._on_count_finished)
+        self._count_worker.failed.connect(self._on_count_failed)
+        self.log_view.append(f"[{tag}] 카운팅 시작...")
+        self._count_worker.start()
+
+    def _on_count_finished(self, label: str, result: str) -> None:
+        self.log_view.append(f"{label} 카운팅 완료: {result}")
+
+    def _on_count_failed(self, label: str, error: str) -> None:
+        self.log_view.append(f"[count] ERROR: {error}")
+        QMessageBox.critical(self, f"{label} 카운팅 실패", error)
 
     def on_count(self) -> None:
         self._run_count_common("turn")
@@ -1918,11 +1962,11 @@ class MainWindow(QMainWindow):
         try:
             self._save_config()
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
         try:
             self._stop_worker(wait_ms=5000)
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
         app = QApplication.instance()
         if app is not None:
             app.quit()
@@ -1942,7 +1986,7 @@ def main() -> None:
         base.setPointSizeF(pt * UI_SCALE)
         app.setFont(base)
     except Exception:
-        pass
+        logger.debug("Suppressed error", exc_info=True)
 
     window = MainWindow()
     window.show()

@@ -7,6 +7,7 @@ Steps:
 - 3차: 여전히 1회 트랙을 외삽해 다른 라인과 교차하면 두 번째 교차로 추가
 """
 
+import logging
 import argparse
 import bisect
 import json
@@ -30,6 +31,9 @@ from src.pipeline.virtual_events import load_virtual_events
 
 EXTRAP_LINE_OVERSHOOT_PX = 20.0
 
+
+logger = logging.getLogger(__name__)
+
 def slot_id(ts: float, interval_sec: int) -> int:
     return int(ts // interval_sec) * interval_sec
 
@@ -46,6 +50,7 @@ def _pt_xy(p) -> Optional[Tuple[float, float]]:
             return float(p[2]), float(p[3])
         return float(p[0]), float(p[1])
     except Exception:
+        logger.debug("Suppressed error", exc_info=True)
         return None
 
 
@@ -129,6 +134,7 @@ def extrapolate_line_hits_detailed(
         try:
             return float(p[2]), float(p[3])
         except Exception:
+            logger.debug("Suppressed error", exc_info=True)
             return None
 
     p0 = _pick_xy(pts_raw[0])
@@ -289,6 +295,7 @@ def _has_track_trajs(db_path: Path) -> bool:
             row = conn.execute("select 1 from sqlite_master where type='table' and name='track_trajs'").fetchone()
             return bool(row)
     except Exception:
+        logger.debug("Suppressed error", exc_info=True)
         return False
 
 
@@ -335,7 +342,7 @@ def _line_in_normal(
                 nx, ny = (-nx, -ny)
             return (float(nx), float(ny))
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
     inx, iny = _bound_in_dir(bound)
     if (inx, iny) != (0.0, 0.0):
         return (float(inx), float(iny))
@@ -1213,6 +1220,7 @@ def run_count(
                 if row and row[0] is not None:
                     return float(row[0]) / 1000.0
         except Exception:
+            logger.debug("Suppressed error", exc_info=True)
             return None
         return None
 

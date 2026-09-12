@@ -1,3 +1,4 @@
+import logging
 import copy
 import json
 from dataclasses import dataclass
@@ -7,6 +8,9 @@ from typing import Callable, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+
+
+logger = logging.getLogger(__name__)
 
 def _normalize_points(points: Sequence[Sequence[float]]) -> List[List[float]]:
     out: List[List[float]] = []
@@ -59,6 +63,7 @@ def load_bev_config(path: Path) -> Optional[BevConfig]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
+        logger.debug("Suppressed error", exc_info=True)
         return None
     src_points = _normalize_points(data.get("src_points") or [])
     out_w = int(data.get("output_width") or 0)
@@ -158,7 +163,7 @@ def export_bev_video(
                 try:
                     progress_cb(count, total_frames)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed error", exc_info=True)
     finally:
         writer.release()
         cap.release()

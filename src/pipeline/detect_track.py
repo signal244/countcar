@@ -1,3 +1,4 @@
+import logging
 import math
 import uuid
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ import numpy as np
 from ultralytics import YOLO
 
 from src.db.writer import TrackTrajDBWriter
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -163,7 +166,7 @@ class DetectionTracker:
 
             LOGGER.setLevel(logging.ERROR)
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
 
         try:
             stream = self.model.track(
@@ -201,7 +204,7 @@ class DetectionTracker:
                             progress_cb("[stop] interruption requested")
                         break
                 except Exception:
-                    pass
+                    logger.debug("Suppressed error", exc_info=True)
             src_frame_id = sample_idx * vid_stride
             if progress_cb and sample_idx % 100 == 0:
                 progress_cb(f"[progress] frame {src_frame_id}")

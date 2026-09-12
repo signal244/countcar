@@ -1,4 +1,5 @@
-from pathlib import Path
+from pathlib import logging
+import Path
 from typing import Tuple
 
 
@@ -6,6 +7,9 @@ def can_auto_download_model(model_value: str | Path) -> bool:
     name = Path(str(model_value or "")).name.strip().lower()
     return bool(name) and name.startswith("yolo") and name.endswith(".pt")
 
+
+
+logger = logging.getLogger(__name__)
 
 def resolve_model_source(model_value: str | Path) -> Tuple[str, bool]:
     raw = str(model_value or "").strip()
@@ -31,13 +35,15 @@ def ensure_model_source(model_value: str | Path) -> str:
     try:
         from ultralytics.utils.downloads import attempt_download_asset
     except Exception:
+        logger.debug("Suppressed error", exc_info=True)
         return str(model_path.name)
     try:
         model_path.parent.mkdir(parents=True, exist_ok=True)
     except Exception:
-        pass
+        logger.debug("Suppressed error", exc_info=True)
     try:
         downloaded = attempt_download_asset(str(model_path), release="latest")
         return str(downloaded)
     except Exception:
+        logger.debug("Suppressed error", exc_info=True)
         return str(model_path.name)

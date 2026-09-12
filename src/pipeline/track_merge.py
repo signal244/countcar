@@ -1,3 +1,4 @@
+import logging
 import json
 import sqlite3
 import time
@@ -19,12 +20,15 @@ Point = Tuple[float, float]
 SQLITE_BUSY_TIMEOUT_MS = 15_000
 
 
+
+logger = logging.getLogger(__name__)
+
 def _connect_rw(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=max(1.0, SQLITE_BUSY_TIMEOUT_MS / 1000.0))
     try:
         conn.execute(f"PRAGMA busy_timeout={int(SQLITE_BUSY_TIMEOUT_MS)}")
     except Exception:
-        pass
+        logger.debug("Suppressed error", exc_info=True)
     return conn
 
 
@@ -170,6 +174,7 @@ def _load_gate_context(lines_path: Optional[Path]) -> Dict[str, List[Dict[str, o
             return empty
         payload = json.loads(lines_path.read_text(encoding="utf-8"))
     except Exception:
+        logger.debug("Suppressed error", exc_info=True)
         return empty
 
     lines_out: List[Dict[str, object]] = []

@@ -1,4 +1,5 @@
-﻿import json
+﻿import logging
+import json
 import math
 import sqlite3
 from dataclasses import dataclass
@@ -51,6 +52,9 @@ from src.pipeline.track_merge import load_effective_track_merge_map, save_manual
 
 VIEWER_EXTRAP_OVERSHOOT_PX = 20.0
 
+
+
+logger = logging.getLogger(__name__)
 
 def _segment_speed(a_xy: Tuple[float, float], a_ts: float, b_xy: Tuple[float, float], b_ts: float) -> float:
     dt = float(b_ts) - float(a_ts)
@@ -347,6 +351,7 @@ class _AutoFitView(QGraphicsView):
         try:
             self._zoom_cb(float(self.transform().m11()))
         except Exception:
+            logger.debug("Suppressed error", exc_info=True)
             return
 
     def fit_to_rect(self) -> None:
@@ -460,6 +465,7 @@ def _probe_video_size(video_path: Optional[Path]) -> Optional[Tuple[int, int]]:
         if w > 0 and h > 0:
             return w, h
     except Exception:
+        logger.debug("Suppressed error", exc_info=True)
         return None
     return None
 
@@ -510,6 +516,7 @@ def _read_lines(lines_path: Path) -> Tuple[List[LineDef], Optional[Tuple[int, in
             ))
         return out, base
     except Exception:
+        logger.debug("Suppressed error", exc_info=True)
         return [], None
 
 
@@ -531,11 +538,11 @@ def _resolve_existing_path(path_value: Optional[object]) -> Optional[Path]:
     try:
         candidates.append((Path.cwd() / p).resolve())
     except Exception:
-        pass
+        logger.debug("Suppressed error", exc_info=True)
     try:
         candidates.append((Path(__file__).resolve().parents[2] / p).resolve())
     except Exception:
-        pass
+        logger.debug("Suppressed error", exc_info=True)
     seen: set[str] = set()
     for cand in candidates:
         key = str(cand)
@@ -591,6 +598,7 @@ class _TrajectoryLoadWorker(QObject):
         try:
             return bool(QThread.currentThread().isInterruptionRequested())
         except Exception:
+            logger.debug("Suppressed error", exc_info=True)
             return False
 
     def _intersects(self, a, b, c, d) -> bool:
@@ -933,7 +941,7 @@ class _TrajectoryLoadWorker(QObject):
             try:
                 init_db(self.db_path)
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
             with sqlite3.connect(self.db_path) as conn:
                 has_track_trajs = conn.execute(
                     "select 1 from sqlite_master where type='table' and name='track_trajs' limit 1"
@@ -1497,6 +1505,7 @@ class TrajectoryViewer2Window(QMainWindow):
             if isinstance(bottom_sizes, list) and all(isinstance(x, int) for x in bottom_sizes):
                 self.bottom_splitter.setSizes([int(x) for x in bottom_sizes])
         except Exception:
+            logger.debug("Suppressed error", exc_info=True)
             return
 
     def closeEvent(self, event) -> None:
@@ -1516,6 +1525,7 @@ class TrajectoryViewer2Window(QMainWindow):
             if not isinstance(opts, dict):
                 return
         except Exception:
+            logger.debug("Suppressed error", exc_info=True)
             return
         self._restoring_options = True
         try:
@@ -1530,15 +1540,15 @@ class TrajectoryViewer2Window(QMainWindow):
                 self.track_width = float(opts.get("track_width", self.track_width))
                 self.width_spin.setValue(self.track_width)
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
             try:
                 self.frame_step_spin.setValue(int(opts.get("frame_step", int(self.frame_step_spin.value()))))
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
             try:
                 self.max_tracks_spin.setValue(int(opts.get("max_tracks", int(self.max_tracks_spin.value()))))
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
             self._bg_enabled = bool(opts.get("bg_enabled", False))
             self.bg_toggle_btn.setText("배경 보임" if self._bg_enabled else "배경 숨김")
             merge_cfg = opts.get("merge_cfg")
@@ -1584,6 +1594,7 @@ class TrajectoryViewer2Window(QMainWindow):
             cfg[self._config_opts_key] = opts
             save_app_config(self.config_path, cfg)
         except Exception:
+            logger.debug("Suppressed error", exc_info=True)
             return
 
     def _persist_window_state(self) -> None:
@@ -1597,6 +1608,7 @@ class TrajectoryViewer2Window(QMainWindow):
             cfg[self._config_bottom_splitter_key] = [int(x) for x in self.bottom_splitter.sizes()]
             save_app_config(self.config_path, cfg)
         except Exception:
+            logger.debug("Suppressed error", exc_info=True)
             return
 
     def _set_reload_pending(self, pending: bool, reason: str = "") -> None:
@@ -1610,12 +1622,12 @@ class TrajectoryViewer2Window(QMainWindow):
             try:
                 self.scene.removeItem(it)
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
         for it in list(self._line_label_items):
             try:
                 self.scene.removeItem(it)
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
         self._line_items = []
         self._line_label_items = []
         rect = self.scene.sceneRect()
@@ -1627,7 +1639,7 @@ class TrajectoryViewer2Window(QMainWindow):
         try:
             self._ensure_base_matches_video(video_path)
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
         bg_item, bg_w, bg_h = _load_background(video_path, self.resize_target) if self._bg_enabled else (None, 0.0, 0.0)
         self._bg_item = bg_item
         self._bg_size = (bg_w, bg_h)
@@ -1955,7 +1967,7 @@ class TrajectoryViewer2Window(QMainWindow):
                 dlg.spin_gap.setValue(float(self._merge_cfg.get("reconnect_gap", 3.0)))
                 dlg.spin_passes.setValue(int(self._merge_cfg.get("reconnect_passes", 2)))
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._merge_cfg = dlg.get_config()
             self._merge_relaxed_mode = False
@@ -1974,7 +1986,7 @@ class TrajectoryViewer2Window(QMainWindow):
                     dlg.cb_target.setCurrentIndex(idx_tgt)
                 dlg.spin_horizon.setValue(float(self._extrap_cfg.get("extrap_horizon", 200.0)))
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._extrap_cfg = dlg.get_config()
             self.btn_preview_extrap.setEnabled(True)
@@ -2284,6 +2296,7 @@ class TrajectoryViewer2Window(QMainWindow):
         try:
             merge_map = load_effective_track_merge_map(db_path, session_id)
         except Exception:
+            logger.debug("Suppressed error", exc_info=True)
             return set()
         saved: set[str] = set()
         for src, dst in dict(merge_map or {}).items():
@@ -2311,6 +2324,7 @@ class TrajectoryViewer2Window(QMainWindow):
                     if track_id is not None:
                         out.add(str(track_id))
         except Exception:
+            logger.debug("Suppressed error", exc_info=True)
             return set()
         return out
 
@@ -2476,7 +2490,7 @@ class TrajectoryViewer2Window(QMainWindow):
                     nx = -nx
                     ny = -ny
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
         return (float(nx), float(ny))
 
     def _compute_inout(self, vx: float, vy: float, line: Optional[LineDef]) -> str:
@@ -2561,7 +2575,7 @@ class TrajectoryViewer2Window(QMainWindow):
             try:
                 self.scene.removeItem(item)
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
         self._extrap_preview_items = []
 
     def _apply_extrap_preview(self, candidates: List[Dict[str, object]]) -> None:
@@ -2578,7 +2592,7 @@ class TrajectoryViewer2Window(QMainWindow):
                 gitem.setPen(pen)
                 gitem.setZValue(1.25)
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
             sx = float(self._scale_sx or 1.0)
             sy = float(self._scale_sy or 1.0)
             x1 = float(cand["start_x"]) * sx
@@ -2992,7 +3006,7 @@ class TrajectoryViewer2Window(QMainWindow):
                                     ),
                                 }
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
         gap_thresh_ms = float(gap_thresh_sec) * 1000.0
         if bool(self._merge_relaxed_mode):
             dist_thresh = float(dist_thresh) * 2.2
@@ -3183,7 +3197,7 @@ class TrajectoryViewer2Window(QMainWindow):
             try:
                 self.scene.removeItem(child_item)
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
             removed_item_ids.add(id(child_item))
             meta_by_tid.pop(str(child_tid), None)
         self._track_items_meta = list(meta_by_tid.values())
@@ -3275,6 +3289,7 @@ class TrajectoryViewer2Window(QMainWindow):
         try:
             return float(raw_pts[0][1]) / 1000.0, float(raw_pts[-1][1]) / 1000.0
         except Exception:
+            logger.debug("Suppressed error", exc_info=True)
             return None, None
 
     def _endpoint_distance(self, raw_a: List[List[float]], raw_b: List[List[float]]) -> float:
@@ -3283,6 +3298,7 @@ class TrajectoryViewer2Window(QMainWindow):
             bx, by = float(raw_b[0][2]), float(raw_b[0][3])
             return float(math.hypot(ax - bx, ay - by))
         except Exception:
+            logger.debug("Suppressed error", exc_info=True)
             return 0.0
 
     def _on_execute_manual_merge(self) -> None:
@@ -3583,7 +3599,7 @@ class TrajectoryViewer2Window(QMainWindow):
             try:
                 self.scene.removeItem(it)
             except Exception:
-                pass
+                logger.debug("Suppressed error", exc_info=True)
         self._pending_items = []
 
     def _on_view_click(self, x: float, y: float) -> None:
@@ -3710,6 +3726,7 @@ class TrajectoryViewer2Window(QMainWindow):
         except RuntimeError:
             return False
         except Exception:
+            logger.debug("Suppressed error", exc_info=True)
             return False
 
     def _clear_finished_loader(self) -> None:
@@ -3730,10 +3747,10 @@ class TrajectoryViewer2Window(QMainWindow):
                     try:
                         th.terminate()
                     except Exception:
-                        pass
+                        logger.debug("Suppressed error", exc_info=True)
                     th.wait(1500)
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
         if self._is_thread_alive(th):
             return False
         if self._load_thread is th:
@@ -3746,6 +3763,7 @@ class TrajectoryViewer2Window(QMainWindow):
             snd = self.sender()
             return int(getattr(snd, "token", 0)) if snd is not None else None
         except Exception:
+            logger.debug("Suppressed error", exc_info=True)
             return None
 
     @Slot(object)
@@ -3896,7 +3914,7 @@ class TrajectoryViewer2Window(QMainWindow):
         try:
             self._ensure_base_matches_video(video_path)
         except Exception:
-            pass
+            logger.debug("Suppressed error", exc_info=True)
         if not db_path.exists():
             self.status_label.setText(f"DB 없음: {db_path}")
             self.scene.clear()
