@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.ui.widgets import fit_to_screen, wrap_in_scroll
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,7 +53,7 @@ class VehiclePreviewWindow(QWidget):
         self._build_ui()
         # Give the window a reasonable default size and center it.
         try:
-            self.resize(1600, 900)
+            fit_to_screen(self, 1600, 900)
             screen = QGuiApplication.primaryScreen()
             if screen is not None:
                 geo = screen.availableGeometry()
@@ -70,7 +72,8 @@ class VehiclePreviewWindow(QWidget):
 
         self.video_label = QLabel("영상 로딩 중...")
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.video_label.setMinimumSize(900, 520)
+        # 스크롤로 볼 수 있으므로 최소 크기는 작게 유지한다.
+        self.video_label.setMinimumSize(480, 270)
         self.video_label.setStyleSheet("QLabel { background: #121721; color: #dfe7f3; border: 1px solid #2b3342; }")
         layout.addWidget(self.video_label, stretch=1)
 
@@ -92,7 +95,12 @@ class VehiclePreviewWindow(QWidget):
         btn_row.addWidget(self.exit_btn)
         layout.addLayout(btn_row)
 
-        self.setLayout(layout)
+        content = QWidget()
+        content.setLayout(layout)
+        outer = QVBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(wrap_in_scroll(content))
+        self.setLayout(outer)
 
     def _init_pipeline(self) -> None:
         try:

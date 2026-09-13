@@ -25,6 +25,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.ui.widgets import fit_to_screen, wrap_in_scroll
+
 
 
 logger = logging.getLogger(__name__)
@@ -61,7 +63,7 @@ class LineDrawerWindow(QMainWindow):
         self.video_path = video_path
         self.line_path = line_path
         self.setWindowTitle("라인 설정 (첫 프레임)")
-        self.resize(1100, 800)
+        fit_to_screen(self, 1100, 800)
 
         self.lines: List[Dict] = []
         self.current_points: List[Tuple[float, float]] = []
@@ -85,14 +87,15 @@ class LineDrawerWindow(QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
         central.setLayout(layout)
-        self.setCentralWidget(central)
+        self.setCentralWidget(wrap_in_scroll(central))
 
         # top: graphics view
         self.scene = QGraphicsScene()
         self.view = QGraphicsView(self.scene)
         self.view.setRenderHints(self.view.renderHints())
         self.view.setMouseTracking(True)
-        self.view.setMinimumHeight(620)
+        # 작은 화면에서도 창을 줄일 수 있도록 최소 높이를 낮게 잡는다.
+        self.view.setMinimumHeight(320)
         self.view.mousePressEvent = self._on_mouse_press  # type: ignore
         self.view.mouseDoubleClickEvent = self._on_mouse_double_click  # type: ignore
 
@@ -148,7 +151,7 @@ class LineDrawerWindow(QMainWindow):
         list_scroll = QScrollArea()
         list_scroll.setWidgetResizable(True)
         list_scroll.setWidget(list_container)
-        list_scroll.setMinimumHeight(140)
+        list_scroll.setMinimumHeight(100)
 
         r = 0
         ctrl.addWidget(info, r, 0, 1, 2)

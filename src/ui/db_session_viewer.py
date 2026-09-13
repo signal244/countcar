@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.ui.widgets import fit_to_screen
+
 
 TABLE_CANDIDATES: Sequence[str] = (
     "tracks",
@@ -102,7 +104,7 @@ class DbSessionViewerDialog(QDialog):
         self.table_candidates: Sequence[str] = tuple(table_candidates or TABLE_CANDIDATES)
         self.row_limit = 500
         self.setWindowTitle(str(title or "DB Viewer"))
-        self.resize(1300, 760)
+        fit_to_screen(self, 1300, 760)
         self._build_ui()
         self._apply_style()
         self._load_table_list()
@@ -111,6 +113,7 @@ class DbSessionViewerDialog(QDialog):
         root = QVBoxLayout()
 
         header = QLabel(f"DB: {self.db_path} | session_id: {self.session_id or '(전체)'}")
+        header.setWordWrap(True)
         self.status_label = QLabel("")
         self.refresh_btn = QPushButton("새로고침")
         self.refresh_btn.clicked.connect(self._load_table_list)

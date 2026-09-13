@@ -3,19 +3,52 @@
 - WorkflowStepper: 워크플로우 진행 단계 표시기
 - StatusBar: 하단 상태 표시줄 (모델/DB/GPU)
 - section_divider: 구분선 + 라벨
+- wrap_in_scroll: 내용이 창보다 클 때만 스크롤바를 보여주는 래퍼
+- fit_to_screen: 초기 창 크기를 사용 가능한 화면 영역 안으로 제한
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
+
+
+def wrap_in_scroll(content: QWidget) -> QScrollArea:
+    """``content`` 를 스크롤 영역으로 감싼다.
+
+    ``setWidgetResizable(True)`` 이므로 공간이 충분하면 기존과 동일하게
+    보이고, 창이 작아 내용이 잘릴 때만 스크롤바가 나타난다.
+    """
+    scroll = QScrollArea()
+    scroll.setWidget(content)
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    return scroll
+
+
+def fit_to_screen(window: QWidget, width: int, height: int, margin: int = 80) -> None:
+    """요청한 크기로 창을 열되, 사용 가능한 화면 영역을 넘지 않게 제한한다.
+
+    작은 노트북 화면이나 높은 디스플레이 배율에서 창이 화면 밖으로
+    나가는 것을 막는다.
+    """
+    screen = window.screen() or QGuiApplication.primaryScreen()
+    if screen is not None:
+        available = screen.availableGeometry()
+        width = min(int(width), max(480, available.width() - margin))
+        height = min(int(height), max(360, available.height() - margin))
+    window.resize(int(width), int(height))
 
 
 class WorkflowStepper(QWidget):

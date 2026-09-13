@@ -10,6 +10,25 @@ DARK_DIALOG_STYLE — 다이얼로그 전용 스타일
 MAIN_WINDOW_STYLE = """
 /* ─── 전체 배경 (카드 대비용 더 어두운 톤) ─── */
 QMainWindow { background-color: #1a2230; }
+/* 스크롤 래퍼는 배경을 가리지 않고, 스크롤바만 다크 톤으로 */
+QScrollArea { background: transparent; border: none; }
+QScrollArea > QWidget > QWidget { background: transparent; }
+QScrollBar:vertical, QScrollBar:horizontal {
+    background: #1a2230;
+    border: none;
+    width: 12px;
+    height: 12px;
+    margin: 0;
+}
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+    background: #3d4656;
+    border-radius: 6px;
+    min-height: 28px;
+    min-width: 28px;
+}
+QScrollBar::handle:hover { background: #4d586b; }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 QLabel { color: #dfe7f3; }
 QLabel[role="caption"] {
     background: #2b3342;

@@ -48,6 +48,7 @@ from src.config.loader import load_app_config, save_app_config
 from src.db.schema import init_db
 from src.db.writer import decode_traj
 from src.ui.db_session_viewer import DbSessionViewerDialog
+from src.ui.widgets import fit_to_screen, wrap_in_scroll
 from src.pipeline.track_merge import load_effective_track_merge_map, save_manual_track_merge
 
 VIEWER_EXTRAP_OVERSHOOT_PX = 20.0
@@ -1161,7 +1162,7 @@ class TrajectoryViewer2Window(QMainWindow):
     ):
         super().__init__()
         self.setWindowTitle("궤적 보기 2")
-        self.resize(1350, 1000)
+        fit_to_screen(self, 1350, 1000)
         self.config_path = config_path
         self._config_geometry_key = "trajectory2_window_geometry"
         self._config_splitter_key = "trajectory2_splitter_sizes"
@@ -1431,8 +1432,9 @@ class TrajectoryViewer2Window(QMainWindow):
         line_box.setLayout(line_grid)
         self.bottom_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.bottom_splitter.setChildrenCollapsible(False)
-        self.bottom_splitter.addWidget(traj_box)
-        self.bottom_splitter.addWidget(line_box)
+        # 하단 설정 패널은 창이 작을 때 잘리지 않도록 각각 스크롤로 감싼다.
+        self.bottom_splitter.addWidget(wrap_in_scroll(traj_box))
+        self.bottom_splitter.addWidget(wrap_in_scroll(line_box))
         self.bottom_splitter.setSizes([700, 500])
         self.splitter.addWidget(top)
         self.splitter.addWidget(self.bottom_splitter)
@@ -1677,7 +1679,8 @@ class TrajectoryViewer2Window(QMainWindow):
         m = re.match(r"^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$", s.strip())
         if not m:
             return
-        self.resize(int(m.group(1)), int(m.group(2)))
+        # 저장된 크기가 현재 화면보다 크면(모니터 교체 등) 화면 안으로 줄인다.
+        fit_to_screen(self, int(m.group(1)), int(m.group(2)))
         self.move(int(m.group(3)), int(m.group(4)))
 
     def _show_msg(self, title: str, text: str, is_warning: bool = False) -> None:

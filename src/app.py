@@ -51,7 +51,13 @@ from src.ui.line_drawer import LineDrawerWindow
 from src.ui.model_selector import ModelComboBox
 from src.ui.theme import DARK_DIALOG_STYLE, MAIN_WINDOW_STYLE
 from src.ui.vehicle_preview import VehiclePreviewWindow
-from src.ui.widgets import StatusBar, WorkflowStepper, section_divider
+from src.ui.widgets import (
+    StatusBar,
+    WorkflowStepper,
+    fit_to_screen,
+    section_divider,
+    wrap_in_scroll,
+)
 from src.ui.video_selector import select_video
 from src.ui.workers import CountWorker, PipelineWorker
 from src.ui.trajectory_viewer2 import TrajectoryViewer2Window
@@ -66,8 +72,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("차량 교통량 카운팅(v6.0)")
-        # Keep the initial window wide enough for long path inputs.
-        self.resize(int(1050 * UI_SCALE), int(700 * UI_SCALE))
+        # Keep the initial window wide enough for long path inputs,
+        # but never larger than the available screen area.
+        fit_to_screen(self, int(1050 * UI_SCALE), int(700 * UI_SCALE))
 
         self.cfg_path = Path("config/app_config.json")
         self.state_path = Path("config/user_state.json")
@@ -216,7 +223,7 @@ class MainWindow(QMainWindow):
 
         container = QWidget()
         container.setLayout(main_layout)
-        self.setCentralWidget(container)
+        self.setCentralWidget(wrap_in_scroll(container))
 
     def _header(self) -> QWidget:
         self.stepper = WorkflowStepper(
