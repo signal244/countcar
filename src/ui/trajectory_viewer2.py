@@ -1304,16 +1304,14 @@ class TrajectoryViewer2Window(QMainWindow):
         self.track_filter_input = QLineEdit()
         self.track_filter_input.setPlaceholderText("track_id 검색...")
         self.track_filter_input.setClearButtonEnabled(True)
+        # 차종 목록은 하드코딩하지 않는다. 모델 프로파일마다 클래스명이 다르므로
+        # 로드된 궤적에 실제로 존재하는 차종으로 _rebuild_class_filter_checks() 가 채운다.
         self._class_checks: Dict[str, QCheckBox] = {}
-        _class_display = [
-            ("승용차", "승용차"), ("소형버스", "소형버스"), ("대형버스", "대형버스"),
-            ("소형화물", "소형화물"), ("중형화물", "중형화물"), ("대형화물", "대형화물"),
-            ("기타", "기타"),
-        ]
-        for display, key in _class_display:
-            cb = QCheckBox(display)
-            cb.setChecked(True)
-            self._class_checks[key] = cb
+        self._class_filter_row: Optional[QHBoxLayout] = None
+        self._class_unchecked: set = set()   # 사용자가 끈 차종 (재생성 시 유지)
+        self._filter_debounce = QTimer(self)
+        self._filter_debounce.setSingleShot(True)
+        self._filter_debounce.setInterval(200)
 
         # ── 기능 5: 작업 히스토리 (Undo) ──
         self._undo_stack: List[Dict] = []  # [{type, data, description}]
@@ -1405,8 +1403,7 @@ class TrajectoryViewer2Window(QMainWindow):
         filter_row = QHBoxLayout()
         filter_row.addWidget(cap("🔍 필터"))
         filter_row.addWidget(self.track_filter_input, stretch=1)
-        for cb in self._class_checks.values():
-            filter_row.addWidget(cb)
+        self._class_filter_row = filter_row      # 체크박스는 로드 후 여기에 채운다
         filter_group = QGroupBox("🔍 궤적 필터")
         filter_group.setObjectName("groupGray")
         filter_group.setLayout(filter_row)
@@ -1544,13 +1541,21 @@ class TrajectoryViewer2Window(QMainWindow):
         self.lines_input.editingFinished.connect(self._persist_options)
         self.video_input.editingFinished.connect(self._persist_options)
         # ── 기능 4: 궤적 필터 시그널 ──
-        self.track_filter_input.textChanged.connect(self._apply_track_filter)
-        for cb in self._class_checks.values():
-            cb.toggled.connect(self._apply_track_filter)
+        # 타이핑 한 글자마다 전체 궤적을 순회하면 느리므로 200ms 디바운스를 건다.
+        self.track_filter_input.textChanged.connect(self._filter_debounce.start)
+        self._filter_debounce.timeout.connect(self._apply_track_filter)
         # ── 기능 5: 되돌리기 ──
         self.btn_undo.clicked.connect(self._on_undo)
         # ── 기능 6: 프레임 슬라이더 ──
-        self.frame_slider.valueChanged.connect(self._on_frame_slider_changed)
+        # 드래그 중 모든 프레임을 디코딩하면 멈추므로, 라벨만 즉시 갱신하고
+        # 실제 프레임 읽기는 멈춘 뒤(120ms) 한 번만 한다.
+        self.frame_slider.valueChanged.connect(self._on_frame_slider_moved)
+        self._frame_seek_debounce = QTimer(self)
+        self._frame_seek_debounce.setSingleShot(True)
+        self._frame_seek_debounce.setInterval(120)
+        self._frame_seek_debounce.timeout.connect(
+            lambda: self._on_frame_slider_changed(self.frame_slider.value())
+        )
         # ── 기능 3: 키보드 단축키 ──
         QShortcut(QKeySequence("Ctrl+R"), self).activated.connect(self._reset_filter_mode)
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._save_lines)
@@ -2969,10 +2974,12 @@ class TrajectoryViewer2Window(QMainWindow):
         self._apply_extrap_preview(candidates)
         # ── 기능 5: 외삽 되돌리기 기록 ──
         extrap_track_ids = sorted({str(row[2]) for row in rows})
+        # 되돌릴 때 파이프라인이 만든 이벤트까지 지우지 않도록
+        # 이번에 기록한 (track_id, method) 조합을 그대로 남긴다.
         self._push_undo("extrap", {
             "db_path": str(db_path),
             "session_id": str(session_id),
-            "track_ids": extrap_track_ids,
+            "keys": [list(k) for k in delete_keys],
         }, f"외삽 {len(extrap_track_ids)}개 트랙")
         cand_a = sum(1 for cand in candidates if str(cand.get("role")) == "A")
         cand_b = sum(1 for cand in candidates if str(cand.get("role")) == "B")
@@ -3510,7 +3517,7 @@ class TrajectoryViewer2Window(QMainWindow):
         self._push_undo("manual_extrap", {
             "db_path": str(db_path),
             "session_id": str(session_id),
-            "track_ids": [tid],
+            "keys": [[str(tid), method]],
         }, f"수동 외삽 {tid}")
         self._clear_manual_selection()
         self.status_label.setText(f"강제 외삽 완료: {tid} -> {event.get('line_id')}")
@@ -3651,6 +3658,8 @@ class TrajectoryViewer2Window(QMainWindow):
             self._ensure_base_matches_video(resolved)
             self._bg_enabled = True
             self.bg_toggle_btn.setText("배경 보임")
+            self._close_video_cap()      # 영상이 바뀌었으니 다시 연다
+            self._sync_frame_slider()
             self._rebuild_scene_from_cache()
             self._persist_options()
 
@@ -3831,6 +3840,7 @@ class TrajectoryViewer2Window(QMainWindow):
             self._load_worker = None
 
     def _cancel_loader(self) -> bool:
+        self._hide_progress()
         th = self._load_thread
         if th is None:
             return True
@@ -3992,6 +4002,7 @@ class TrajectoryViewer2Window(QMainWindow):
 
     def _on_tracks_finished(self, meta: object, token: int) -> None:
         if token != self._loading_token:
+            self._hide_progress()   # 취소된 로딩이라도 진행바를 남기지 않는다
             return
         self._hide_progress()
         track_cnt = int(meta.get("track_count") or 0) if isinstance(meta, dict) else 0
@@ -4010,6 +4021,12 @@ class TrajectoryViewer2Window(QMainWindow):
             track_count=track_cnt,
             line_count=len(self._lines),
         )
+        # 새로 만들어진 궤적 아이템은 기본이 '보임' 이라, 체크박스는 그대로인데
+        # 화면만 전체가 보이는 현상이 생긴다. 로드 후 필터를 다시 적용한다.
+        self._rebuild_class_filter_checks()
+        self._apply_track_filter()
+        # 배경이 이미 켜진 상태로 복원된 경우에도 슬라이더가 나오도록 맞춘다.
+        self._sync_frame_slider()
 
     def _render_scene_async(self) -> None:
         db_path = Path(self.db_input.text().strip() or "output/tracks.sqlite")
@@ -4163,28 +4180,51 @@ class TrajectoryViewer2Window(QMainWindow):
 
     # ── 기능 4: 궤적 필터 (track_id 검색 + 차종 체크) ──
 
+    def _rebuild_class_filter_checks(self) -> None:
+        """로드된 궤적에 실제로 있는 차종으로 체크박스를 다시 만든다.
+
+        차종 이름은 모델 프로파일에 따라 달라지므로 하드코딩하지 않는다.
+        사용자가 꺼 둔 차종은 재생성 후에도 꺼진 상태를 유지한다.
+        """
+        if self._class_filter_row is None:
+            return
+        names = sorted({
+            str(meta[4] or "").strip()
+            for meta in self._track_items_meta
+            if str(meta[4] or "").strip()
+        })
+        if names == sorted(self._class_checks.keys()):
+            return          # 구성이 그대로면 건드리지 않는다
+        for cb in self._class_checks.values():
+            self._class_filter_row.removeWidget(cb)
+            cb.setParent(None)
+            cb.deleteLater()
+        self._class_checks.clear()
+        for name in names:
+            cb = QCheckBox(name)
+            cb.setChecked(name not in self._class_unchecked)
+            cb.toggled.connect(self._on_class_check_toggled)
+            self._class_filter_row.addWidget(cb)
+            self._class_checks[name] = cb
+
+    def _on_class_check_toggled(self, *_args: object) -> None:
+        """체크 상태를 기억해 두고 필터를 다시 적용한다."""
+        self._class_unchecked = {
+            name for name, cb in self._class_checks.items() if not cb.isChecked()
+        }
+        self._apply_track_filter()
+
     def _apply_track_filter(self, *_args: object) -> None:
         """track_id 검색어와 차종 체크에 따라 궤적 표시/숨김을 토글한다."""
         keyword = self.track_filter_input.text().strip().lower()
-        enabled_classes: set[str] = set()
-        for cls_name, cb in self._class_checks.items():
-            if cb.isChecked():
-                enabled_classes.add(cls_name.lower())
-        # _class_color_map 의 키 → 표시명 매핑으로 양방향 허용
-        alias_to_display: Dict[str, str] = {}
-        display_names = {c.lower() for c in self._class_checks}
-        for k, _v in self._class_color_map.items():
-            k_low = k.lower()
-            # _class_color_map 에 한글/영문이 모두 들어있다.
-            # 한글 키를 우선으로 매핑한다.
-            if k_low in display_names:
-                alias_to_display[k_low] = k_low
-            else:
-                # 영문 키: 같은 색상인 한글 키 찾기
-                for kk, vv in self._class_color_map.items():
-                    if vv == _v and kk.lower() in display_names:
-                        alias_to_display[k_low] = kk.lower()
-                        break
+        if not self._class_checks:
+            enabled = None          # 체크박스가 아직 없으면 차종 필터는 적용하지 않는다
+        else:
+            enabled = {
+                name.strip().lower()
+                for name, cb in self._class_checks.items()
+                if cb.isChecked()
+            }
         visible = 0
         hidden = 0
         for meta in self._track_items_meta:
@@ -4195,12 +4235,10 @@ class TrajectoryViewer2Window(QMainWindow):
             except Exception:
                 continue
             show = True
-            # 차종 필터
-            cls_low = str(cls_name or "").strip().lower()
-            display_cls = alias_to_display.get(cls_low, cls_low)
-            if display_cls and display_cls not in enabled_classes:
-                show = False
-            # track_id 검색
+            if enabled is not None:
+                cls_low = str(cls_name or "").strip().lower()
+                if cls_low and cls_low not in enabled:
+                    show = False
             if show and keyword and keyword not in str(tid).lower():
                 show = False
             gitem.setVisible(show)
@@ -4208,10 +4246,8 @@ class TrajectoryViewer2Window(QMainWindow):
                 visible += 1
             else:
                 hidden += 1
-        if keyword or len(enabled_classes) < len(self._class_checks):
+        if keyword or (enabled is not None and len(enabled) < len(self._class_checks)):
             self.status_label.setText(f"필터 적용: {visible}개 표시 / {hidden}개 숨김")
-
-    # ── 기능 5: 작업 히스토리 (Undo) ──
 
     def _push_undo(self, op_type: str, data: Dict, description: str) -> None:
         """되돌리기 스택에 작업을 추가한다."""
@@ -4259,16 +4295,18 @@ class TrajectoryViewer2Window(QMainWindow):
         if not db_path.exists() or not session_id or not pairs:
             return
         with sqlite3.connect(db_path) as conn:
-            for source_tid, merged_tid in pairs:
-                for table in ("track_merge_map_manual", "track_merge_map"):
-                    row = conn.execute(
-                        "select 1 from sqlite_master where type='table' and name=? limit 1",
-                        (table,),
-                    ).fetchone()
-                    if not row:
-                        continue
+            # 뷰어의 병합은 save_manual_track_merge() 를 통해 track_merge_map_manual
+            # 에만 기록된다. 자동 병합 맵(track_merge_map)은 파이프라인 소유이므로
+            # 여기서 지우면 안 된다.
+            row = conn.execute(
+                "select 1 from sqlite_master where type='table' "
+                "and name='track_merge_map_manual' limit 1"
+            ).fetchone()
+            if row:
+                for source_tid, merged_tid in pairs:
                     conn.execute(
-                        f"delete from {table} where session_id = ? and source_track_id = ? and merged_track_id = ?",
+                        "delete from track_merge_map_manual "
+                        "where session_id = ? and source_track_id = ? and merged_track_id = ?",
                         (str(session_id), str(source_tid), str(merged_tid)),
                     )
             conn.commit()
@@ -4276,29 +4314,53 @@ class TrajectoryViewer2Window(QMainWindow):
         self._reload_all()
 
     def _undo_extrap(self, data: Dict) -> None:
-        """외삽 작업을 되돌린다 — DB에서 해당 virtual_event 레코드를 삭제."""
+        """외삽 작업을 되돌린다 — 이 뷰어가 만든 virtual_event 만 삭제한다.
+
+        ``track_virtual_events`` 는 파이프라인(src/pipeline/virtual_events.py)도
+        기록하는 공용 테이블이다. track_id 만으로 지우면 분석 결과까지 함께
+        날아가고 재분석 없이는 복구할 수 없으므로 ``method`` 로 범위를 좁힌다.
+        """
         db_path = Path(data.get("db_path", ""))
         session_id = data.get("session_id", "")
-        track_ids = data.get("track_ids", [])
-        if not db_path.exists() or not session_id or not track_ids:
+        keys = data.get("keys") or []
+        track_ids = data.get("track_ids") or []      # 구버전 스택 호환
+        if not db_path.exists() or not session_id or not (keys or track_ids):
             return
         with sqlite3.connect(db_path) as conn:
             row = conn.execute(
                 "select 1 from sqlite_master where type='table' and name='track_virtual_events' limit 1"
             ).fetchone()
             if row:
-                placeholders = ",".join("?" for _ in track_ids)
-                conn.execute(
-                    f"delete from track_virtual_events where session_id = ? and track_id in ({placeholders})",
-                    [str(session_id)] + [str(t) for t in track_ids],
-                )
+                for key in keys:
+                    try:
+                        tid, method = str(key[0]), str(key[1])
+                    except Exception:
+                        continue
+                    conn.execute(
+                        "delete from track_virtual_events "
+                        "where session_id = ? and track_id = ? and method = ?",
+                        (str(session_id), tid, method),
+                    )
+                if track_ids and not keys:
+                    # method 정보가 없는 구버전 기록: 뷰어가 만든 것만 지운다.
+                    placeholders = ",".join("?" for _ in track_ids)
+                    conn.execute(
+                        f"delete from track_virtual_events where session_id = ? "
+                        f"and track_id in ({placeholders}) and method like 'viewer2_%'",
+                        [str(session_id)] + [str(t) for t in track_ids],
+                    )
             conn.commit()
         self._reload_all()
 
     # ── 기능 6: 배경 프레임 탐색 ──
 
+    def _on_frame_slider_moved(self, frame_no: int) -> None:
+        """슬라이더를 움직이는 동안엔 라벨만 갱신하고 디코딩은 미룬다."""
+        self.frame_slider_label.setText(f"프레임: {frame_no}")
+        self._frame_seek_debounce.start()
+
     def _on_frame_slider_changed(self, frame_no: int) -> None:
-        """프레임 슬라이더 값이 바뀌면 해당 프레임을 배경에 표시한다."""
+        """해당 프레임을 실제로 읽어 배경에 표시한다 (디바운스 후 호출)."""
         self.frame_slider_label.setText(f"프레임: {frame_no}")
         if self._video_cap is None:
             return
@@ -4344,6 +4406,20 @@ class TrajectoryViewer2Window(QMainWindow):
             self._frame_slider_widget.show()
         except Exception:
             logger.debug("Suppressed error", exc_info=True)
+
+    def _sync_frame_slider(self) -> None:
+        """현재 배경 표시 상태에 맞춰 프레임 슬라이더를 열거나 닫는다.
+
+        배경은 `_toggle_background()` 말고도 설정 복원·영상 선택으로 켜질 수
+        있어서, 그 경로에서도 슬라이더가 따라오도록 한 곳에 모았다.
+        """
+        if self._bg_enabled:
+            if self._video_cap is None:
+                self._open_video_for_slider()
+        else:
+            self._close_video_cap()
+            self.frame_slider.setEnabled(False)
+            self._frame_slider_widget.hide()
 
     def _close_video_cap(self) -> None:
         """열린 비디오 캡처를 해제한다."""
