@@ -1107,7 +1107,7 @@ class _TrajectoryLoadWorker(QObject):
                     if self.max_tracks and track_count > self.max_tracks:
                         break
                     if track_count % 200 == 0:
-                        self.progress.emit(f"濡쒕뵫 以?.. tracks={track_count}")
+                        self.progress.emit(f"로딩 중... tracks={track_count}")
                     tracks_batch.append((str(tid), pts, group_label, str(cls_name or "")))
                     if len(tracks_batch) >= self.batch_size_tracks:
                         self.batch_ready.emit(tracks_batch)
@@ -1968,7 +1968,7 @@ class TrajectoryViewer2Window(QMainWindow):
         for s in slots[:5000]:
             start_min = int(s * 15)
             end_min = start_min + 15
-            self.slot_combo.addItem(f"{s} ({start_min}~{end_min}遺?", int(s))
+            self.slot_combo.addItem(f"{s} ({start_min}~{end_min}분)", int(s))
         self.slot_combo.blockSignals(False)
         if self._restore_slot_index is not None:
             idx2 = self.slot_combo.findData(int(self._restore_slot_index))
@@ -3529,11 +3529,11 @@ class TrajectoryViewer2Window(QMainWindow):
         db_path = Path(self.db_input.text().strip() or "output/tracks.sqlite")
         session_id = self.session_combo.currentText().strip()
         if not db_path.exists():
-            self._show_msg("蹂묓빀 痍⑥냼", f"DB 파일을 찾을 수 없습니다.\n{db_path}", True)
+            self._show_msg("병합 취소", f"DB 파일을 찾을 수 없습니다.\n{db_path}", True)
             return
         reply = QMessageBox.question(
             self,
-            "蹂묓빀 痍⑥냼",
+            "병합 취소",
             f"현재 session에 저장된 병합 결과를 모두 삭제하시겠습니까?\n\nsession_id: {session_id}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
