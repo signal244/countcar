@@ -48,6 +48,7 @@ from src.config.loader import load_app_config, save_app_config
 from src.db.schema import init_db
 from src.db.writer import decode_traj
 from src.ui.db_session_viewer import DbSessionViewerDialog
+from src.ui.theme import DARK_DIALOG_STYLE, MAIN_WINDOW_STYLE
 from src.ui.widgets import fit_to_screen, wrap_in_scroll
 from src.pipeline.track_merge import load_effective_track_merge_map, save_manual_track_merge
 
@@ -205,42 +206,8 @@ class LineDef:
         return payload
 
 
-DARK_DIALOG_STYLE = """
-QDialog {
-    background-color: #232b37;
-}
-QDialog QLabel {
-    color: #eef4ff;
-    background: transparent;
-    font-weight: 600;
-}
-QDialog QLineEdit,
-QDialog QSpinBox,
-QDialog QDoubleSpinBox,
-QDialog QComboBox,
-QDialog QListWidget {
-    background: #2f3948;
-    color: #f4f7ff;
-    border: 1px solid #49566b;
-    border-radius: 4px;
-    padding: 4px 8px;
-}
-QDialog QPushButton {
-    background-color: #446b9e;
-    color: #f4f7ff;
-    border: 1px solid #31547e;
-    border-radius: 4px;
-    padding: 5px 12px;
-    font-weight: 700;
-    min-height: 28px;
-}
-QDialog QPushButton:hover {
-    background-color: #5380bb;
-}
-QDialog QPushButton:pressed {
-    background-color: #35597f;
-}
-"""
+
+# DARK_DIALOG_STYLE 는 src.ui.theme 에서 임포트한다.
 
 
 class MergeConfigDialog(QDialog):
@@ -1161,7 +1128,8 @@ class TrajectoryViewer2Window(QMainWindow):
         config_path: Path | None = None,
     ):
         super().__init__()
-        self.setWindowTitle("궤적 보기 2")
+        self.setWindowTitle("👁 궤적 보기")
+        self.setStyleSheet(MAIN_WINDOW_STYLE)
         fit_to_screen(self, 1350, 1000)
         self.config_path = config_path
         self._config_geometry_key = "trajectory2_window_geometry"
@@ -1218,8 +1186,9 @@ class TrajectoryViewer2Window(QMainWindow):
         self.video_input = QLineEdit(str(video_path) if video_path else "")
         self.lines_input = QLineEdit(str(lines_path) if lines_path else "config/lines.json")
         self.reload_btn = QPushButton("새로고침")
+        self.reload_btn.setProperty("btnType", "secondary")
         self.quit_btn = QPushButton("창 종료")
-        self.quit_btn.setStyleSheet("QPushButton { color: #ff4d4d; font-weight: 800; }")
+        self.quit_btn.setProperty("btnType", "danger")
         self.refresh_sessions_btn = QPushButton("세션 새로고침")
         self.refresh_slots_btn = QPushButton("슬롯 새로고침")
         self.pick_video_btn = QPushButton("영상 선택")
@@ -1247,19 +1216,25 @@ class TrajectoryViewer2Window(QMainWindow):
         self.btn_config_merge = QPushButton("병합 설정")
         self.btn_config_extrap = QPushButton("외삽 설정")
         self.btn_preview_merge = QPushButton("병합 미리보기")
+        self.btn_preview_merge.setProperty("btnType", "secondary")
         self.btn_preview_merge.setEnabled(False)
         self.btn_run_merge = QPushButton("병합 실행")
+        self.btn_run_merge.setProperty("btnType", "primary")
         self.btn_cancel_merge = QPushButton("병합 취소")
+        self.btn_cancel_merge.setProperty("btnType", "danger")
         self.btn_cancel_merge.setEnabled(False)
         self.btn_merge_relaxed = QPushButton("병합 완화")
         self.btn_merge_relaxed.setCheckable(True)
         self.btn_merge_debug = QPushButton("병합 디버그")
         self.btn_merge_debug.setCheckable(True)
         self.btn_preview_extrap = QPushButton("외삽 미리보기")
+        self.btn_preview_extrap.setProperty("btnType", "secondary")
         self.btn_preview_extrap.setEnabled(False)
         self.btn_run_extrap = QPushButton("외삽 실행")
+        self.btn_run_extrap.setProperty("btnType", "primary")
         self.btn_run_extrap.setEnabled(False)
         self.btn_cancel_extrap = QPushButton("외삽 취소")
+        self.btn_cancel_extrap.setProperty("btnType", "danger")
         self.btn_cancel_extrap.setEnabled(False)
         self.btn_manual_pick = QPushButton("수동 선택")
         self.btn_manual_pick.setCheckable(True)
@@ -1303,6 +1278,7 @@ class TrajectoryViewer2Window(QMainWindow):
         self.line_clear_pts_btn = QPushButton("포인트초기화")
         self.line_reset_btn = QPushButton("라인 전체 초기화")
         self.line_save_btn = QPushButton("Lines 저장")
+        self.line_save_btn.setProperty("btnType", "primary")
         self.line_load_btn = QPushButton("Lines 불러오기")
         self.lines_list = QListWidget()
         self.status_label = QLabel("")
@@ -1347,7 +1323,8 @@ class TrajectoryViewer2Window(QMainWindow):
         top_layout.setContentsMargins(6, 6, 6, 6)
         top_layout.addWidget(self.view, stretch=1)
         top.setLayout(top_layout)
-        traj_box = QGroupBox("궤적/영상 설정")
+        traj_box = QGroupBox("📍 궤적 · 영상 설정")
+        traj_box.setObjectName("groupTeal")
         traj_grid = QGridLayout()
         def cap(text: str) -> QLabel:
             lbl = QLabel(text)
@@ -1374,14 +1351,16 @@ class TrajectoryViewer2Window(QMainWindow):
         merge_row.addWidget(self.btn_preview_merge)
         merge_row.addWidget(self.btn_run_merge)
         merge_row.addWidget(self.btn_cancel_merge)
-        merge_group = QGroupBox("병합")
+        merge_group = QGroupBox("🔗 병합")
+        merge_group.setObjectName("groupBlue")
         merge_group.setLayout(merge_row)
         extrap_row = QHBoxLayout()
         extrap_row.addWidget(self.btn_config_extrap)
         extrap_row.addWidget(self.btn_preview_extrap)
         extrap_row.addWidget(self.btn_run_extrap)
         extrap_row.addWidget(self.btn_cancel_extrap)
-        extrap_group = QGroupBox("외삽")
+        extrap_group = QGroupBox("📐 외삽")
+        extrap_group.setObjectName("groupBlue")
         extrap_group.setLayout(extrap_row)
         manual_row = QHBoxLayout()
         manual_row.addWidget(self.btn_manual_pick)
@@ -1389,7 +1368,8 @@ class TrajectoryViewer2Window(QMainWindow):
         manual_row.addWidget(self.btn_manual_extrap_fwd)
         manual_row.addWidget(self.btn_manual_extrap_back)
         manual_row.addWidget(self.btn_manual_clear)
-        manual_group = QGroupBox("수동 보정")
+        manual_group = QGroupBox("✋ 수동 보정")
+        manual_group.setObjectName("groupGray")
         manual_group.setLayout(manual_row)
         groups_row = QHBoxLayout()
         groups_row.addWidget(merge_group, stretch=1)
@@ -1415,7 +1395,8 @@ class TrajectoryViewer2Window(QMainWindow):
         zoom_row.addWidget(self._wrap(misc_row))
         traj_grid.addWidget(self._wrap(zoom_row), 5, 0, 1, 4)
         traj_box.setLayout(traj_grid)
-        line_box = QGroupBox("라인 설정")
+        line_box = QGroupBox("📏 라인 설정")
+        line_box.setObjectName("groupTeal")
         line_grid = QGridLayout()
         lines_row = QHBoxLayout(); lines_row.addWidget(self.lines_input, stretch=1); lines_row.addWidget(self.pick_lines_btn)
         line_grid.addWidget(cap("Lines JSON"), 0, 0); line_grid.addWidget(self._wrap(lines_row), 0, 1, 1, 3)
