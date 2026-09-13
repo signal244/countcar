@@ -24,3 +24,4 @@ config/user_state.json
 # 모델 클래스 캐시 + 차종 선택. 모델 파일 지문(크기/수정시각)이 PC마다 달라
 # 커밋하면 매번 충돌성 변경이 생긴다. 없으면 기본값으로 자동 생성된다.
 config/model_profiles.json
+Git_명령어_가이드.md
