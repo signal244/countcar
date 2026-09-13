@@ -10,8 +10,9 @@ from typing import Dict, List, Optional, Tuple
 
 import cv2
 from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QImage, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QImage, QKeySequence, QPainterPath, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -34,8 +35,10 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QSpacerItem,
     QSpinBox,
     QSplitter,
@@ -49,7 +52,7 @@ from src.db.schema import init_db
 from src.db.writer import decode_traj
 from src.ui.db_session_viewer import DbSessionViewerDialog
 from src.ui.theme import DARK_DIALOG_STYLE, MAIN_WINDOW_STYLE
-from src.ui.widgets import fit_to_screen, wrap_in_scroll
+from src.ui.widgets import StatusBar, fit_to_screen, wrap_in_scroll
 from src.pipeline.track_merge import load_effective_track_merge_map, save_manual_track_merge
 
 VIEWER_EXTRAP_OVERSHOOT_PX = 20.0
@@ -1282,6 +1285,53 @@ class TrajectoryViewer2Window(QMainWindow):
         self.line_load_btn = QPushButton("Lines 불러오기")
         self.lines_list = QListWidget()
         self.status_label = QLabel("")
+
+        # ── 기능 1: 로딩 프로그레스바 ──
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)  # indeterminate
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("로딩 중...")
+        self.progress_bar.hide()
+
+        # ── 기능 2: StatusBar (하단 DB/세션/트랙 상태) ──
+        self.status_bar_widget = StatusBar()
+        self.status_bar_widget.add_item("db", "DB: —", "off")
+        self.status_bar_widget.add_item("session", "세션: —", "off")
+        self.status_bar_widget.add_item("tracks", "트랙: 0", "off")
+        self.status_bar_widget.add_item("lines", "라인: 0", "off")
+
+        # ── 기능 4: 궤적 필터 (검색 + 차종 체크) ──
+        self.track_filter_input = QLineEdit()
+        self.track_filter_input.setPlaceholderText("track_id 검색...")
+        self.track_filter_input.setClearButtonEnabled(True)
+        self._class_checks: Dict[str, QCheckBox] = {}
+        _class_display = [
+            ("승용차", "승용차"), ("소형버스", "소형버스"), ("대형버스", "대형버스"),
+            ("소형화물", "소형화물"), ("중형화물", "중형화물"), ("대형화물", "대형화물"),
+            ("기타", "기타"),
+        ]
+        for display, key in _class_display:
+            cb = QCheckBox(display)
+            cb.setChecked(True)
+            self._class_checks[key] = cb
+
+        # ── 기능 5: 작업 히스토리 (Undo) ──
+        self._undo_stack: List[Dict] = []  # [{type, data, description}]
+        self.btn_undo = QPushButton("↩ 되돌리기")
+        self.btn_undo.setProperty("btnType", "danger")
+        self.btn_undo.setEnabled(False)
+        self.btn_undo.setFixedWidth(110)
+
+        # ── 기능 6: 배경 프레임 탐색 슬라이더 ──
+        self.frame_slider = QSlider(Qt.Orientation.Horizontal)
+        self.frame_slider.setRange(0, 0)
+        self.frame_slider.setValue(0)
+        self.frame_slider.setEnabled(False)
+        self.frame_slider_label = QLabel("프레임: 0")
+        self.frame_slider_label.setFixedWidth(100)
+        self._video_cap: Optional[object] = None
+        self._video_total_frames = 0
+
         self.view = _AutoFitView()
         self.view.setAlignment(Qt.AlignCenter)
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1322,6 +1372,13 @@ class TrajectoryViewer2Window(QMainWindow):
         top_layout = QVBoxLayout()
         top_layout.setContentsMargins(6, 6, 6, 6)
         top_layout.addWidget(self.view, stretch=1)
+        # ── 기능 6: 배경 프레임 슬라이더 (뷰포트 아래) ──
+        slider_row = QHBoxLayout()
+        slider_row.addWidget(self.frame_slider_label)
+        slider_row.addWidget(self.frame_slider, stretch=1)
+        self._frame_slider_widget = self._wrap(slider_row)
+        self._frame_slider_widget.hide()
+        top_layout.addWidget(self._frame_slider_widget)
         top.setLayout(top_layout)
         traj_box = QGroupBox("📍 궤적 · 영상 설정")
         traj_box.setObjectName("groupTeal")
@@ -1344,6 +1401,16 @@ class TrajectoryViewer2Window(QMainWindow):
         perf_row.addWidget(cap("프레임 간격")); perf_row.addWidget(self.frame_step_spin)
         perf_row.addWidget(cap("최대 트랙 수")); perf_row.addWidget(self.max_tracks_spin)
         traj_grid.addWidget(self._wrap(perf_row), 2, 0, 1, 4)
+        # ── 기능 4: 궤적 필터 행 ──
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(cap("🔍 필터"))
+        filter_row.addWidget(self.track_filter_input, stretch=1)
+        for cb in self._class_checks.values():
+            filter_row.addWidget(cb)
+        filter_group = QGroupBox("🔍 궤적 필터")
+        filter_group.setObjectName("groupGray")
+        filter_group.setLayout(filter_row)
+        traj_grid.addWidget(filter_group, 3, 0, 1, 4)
         merge_row = QHBoxLayout()
         merge_row.addWidget(self.btn_config_merge)
         merge_row.addWidget(self.btn_merge_relaxed)
@@ -1374,11 +1441,13 @@ class TrajectoryViewer2Window(QMainWindow):
         groups_row = QHBoxLayout()
         groups_row.addWidget(merge_group, stretch=1)
         groups_row.addWidget(extrap_group, stretch=1)
-        traj_grid.addWidget(self._wrap(groups_row), 3, 0, 1, 4)
+        traj_grid.addWidget(self._wrap(groups_row), 4, 0, 1, 4)
         groups_row2 = QHBoxLayout()
         groups_row2.addWidget(manual_group, stretch=1)
-        traj_grid.addWidget(self._wrap(groups_row2), 4, 0, 1, 4)
-        traj_grid.addItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding), 5, 0, 1, 4)
+        # ── 기능 5: 되돌리기 버튼 ──
+        groups_row2.addWidget(self.btn_undo)
+        traj_grid.addWidget(self._wrap(groups_row2), 5, 0, 1, 4)
+        traj_grid.addItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding), 6, 0, 1, 4)
         view_row = QHBoxLayout()
         view_row.addWidget(self.fit_btn)
         view_row.addWidget(self.reset_zoom_btn)
@@ -1393,7 +1462,7 @@ class TrajectoryViewer2Window(QMainWindow):
         zoom_row.addWidget(self._wrap(view_row))
         zoom_row.addStretch()
         zoom_row.addWidget(self._wrap(misc_row))
-        traj_grid.addWidget(self._wrap(zoom_row), 5, 0, 1, 4)
+        traj_grid.addWidget(self._wrap(zoom_row), 6, 0, 1, 4)
         traj_box.setLayout(traj_grid)
         line_box = QGroupBox("📏 라인 설정")
         line_box.setObjectName("groupTeal")
@@ -1423,7 +1492,9 @@ class TrajectoryViewer2Window(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout()
         layout.addWidget(self.splitter, stretch=1)
+        layout.addWidget(self.progress_bar)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.status_bar_widget)
         container.setLayout(layout)
         self.setCentralWidget(container)
 
@@ -1472,6 +1543,20 @@ class TrajectoryViewer2Window(QMainWindow):
         self.db_input.editingFinished.connect(self._persist_options)
         self.lines_input.editingFinished.connect(self._persist_options)
         self.video_input.editingFinished.connect(self._persist_options)
+        # ── 기능 4: 궤적 필터 시그널 ──
+        self.track_filter_input.textChanged.connect(self._apply_track_filter)
+        for cb in self._class_checks.values():
+            cb.toggled.connect(self._apply_track_filter)
+        # ── 기능 5: 되돌리기 ──
+        self.btn_undo.clicked.connect(self._on_undo)
+        # ── 기능 6: 프레임 슬라이더 ──
+        self.frame_slider.valueChanged.connect(self._on_frame_slider_changed)
+        # ── 기능 3: 키보드 단축키 ──
+        QShortcut(QKeySequence("Ctrl+R"), self).activated.connect(self._reset_filter_mode)
+        QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._save_lines)
+        QShortcut(QKeySequence("F"), self).activated.connect(self.view.fit_to_rect)
+        QShortcut(QKeySequence("Escape"), self).activated.connect(self._escape_modes)
+        QShortcut(QKeySequence("Ctrl+Z"), self).activated.connect(self._on_undo)
 
     def _restore_window_state(self) -> None:
         if not self.config_path or not self.config_path.exists():
@@ -1495,6 +1580,7 @@ class TrajectoryViewer2Window(QMainWindow):
         if not self._cancel_loader():
             event.ignore()
             return
+        self._close_video_cap()
         self._persist_options()
         self._persist_window_state()
         super().closeEvent(event)
@@ -2881,6 +2967,13 @@ class TrajectoryViewer2Window(QMainWindow):
             )
             conn.commit()
         self._apply_extrap_preview(candidates)
+        # ── 기능 5: 외삽 되돌리기 기록 ──
+        extrap_track_ids = sorted({str(row[2]) for row in rows})
+        self._push_undo("extrap", {
+            "db_path": str(db_path),
+            "session_id": str(session_id),
+            "track_ids": extrap_track_ids,
+        }, f"외삽 {len(extrap_track_ids)}개 트랙")
         cand_a = sum(1 for cand in candidates if str(cand.get("role")) == "A")
         cand_b = sum(1 for cand in candidates if str(cand.get("role")) == "B")
         self.status_label.setText(
@@ -3130,6 +3223,12 @@ class TrajectoryViewer2Window(QMainWindow):
                 return
         if visual_pairs:
             self._apply_visual_merges(visual_pairs)
+            # 되돌리기 스택에 기록
+            self._push_undo("merge", {
+                "db_path": str(db_path_str),
+                "session_id": session_id,
+                "pairs": [(tid_b, tid_a) for tid_a, tid_b in visual_pairs],
+            }, f"병합 {saved_count}개")
         self._apply_saved_merge_map(Path(db_path_str), session_id)
         self.status_label.setText(f"병합 저장: {saved_count}개")
 
@@ -3321,6 +3420,12 @@ class TrajectoryViewer2Window(QMainWindow):
             direction_score=1.0,
             class_match=0,
         )
+        # 되돌리기 스택에 기록
+        self._push_undo("manual_merge", {
+            "db_path": str(db_path),
+            "session_id": session_id,
+            "pairs": [(str(child_tid), str(parent_tid))],
+        }, f"수동 병합 {child_tid}→{parent_tid}")
         self._apply_saved_merge_map(db_path, session_id)
         self._clear_manual_selection()
         self._reload_all()
@@ -3401,6 +3506,12 @@ class TrajectoryViewer2Window(QMainWindow):
             return
         method = "viewer2_manual_extrap_backward" if backward else "viewer2_manual_extrap_forward"
         self._save_manual_virtual_event(db_path, session_id, tid, event, method)
+        # ── 기능 5: 수동 외삽 되돌리기 기록 ──
+        self._push_undo("manual_extrap", {
+            "db_path": str(db_path),
+            "session_id": str(session_id),
+            "track_ids": [tid],
+        }, f"수동 외삽 {tid}")
         self._clear_manual_selection()
         self.status_label.setText(f"강제 외삽 완료: {tid} -> {event.get('line_id')}")
 
@@ -3882,6 +3993,7 @@ class TrajectoryViewer2Window(QMainWindow):
     def _on_tracks_finished(self, meta: object, token: int) -> None:
         if token != self._loading_token:
             return
+        self._hide_progress()
         track_cnt = int(meta.get("track_count") or 0) if isinstance(meta, dict) else 0
         db_path = Path(self.db_input.text().strip() or "output/tracks.sqlite")
         session_raw = self.session_combo.currentText().strip()
@@ -3890,6 +4002,13 @@ class TrajectoryViewer2Window(QMainWindow):
         self.status_label.setText(
             f"DB={db_path.name} session_id={session_id or '(선택)'}  tracks={track_cnt}  "
             f"merged_view={merged_applied}  lines={len(self._lines)}  (frame_step={self.frame_step_spin.value()})"
+        )
+        # StatusBar 업데이트
+        self._update_status_bar(
+            db_name=db_path.name,
+            session_id=session_id or "",
+            track_count=track_cnt,
+            line_count=len(self._lines),
         )
 
     def _render_scene_async(self) -> None:
@@ -3977,14 +4096,274 @@ class TrajectoryViewer2Window(QMainWindow):
         self._load_thread = thread
         self._load_worker = worker
         self.status_label.setText("로딩 중... (데이터가 많으면 시간이 더 걸릴 수 있습니다)")
+        self._show_progress()
         thread.start()
 
     def _render_scene(self) -> None:
         self._render_scene_async()
 
+    # ── 기능 1: 로딩 프로그레스바 제어 ──
+
+    def _show_progress(self) -> None:
+        """로딩 시작 시 프로그레스바 표시."""
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setFormat("로딩 중...")
+        self.progress_bar.show()
+
+    def _hide_progress(self) -> None:
+        """로딩 완료 시 프로그레스바 숨김."""
+        self.progress_bar.hide()
+
+    # ── 기능 2: StatusBar 업데이트 ──
+
+    def _update_status_bar(
+        self,
+        db_name: str = "",
+        session_id: str = "",
+        track_count: int = 0,
+        line_count: int = 0,
+    ) -> None:
+        """하단 StatusBar 위젯의 항목을 갱신한다."""
+        self.status_bar_widget.update_item(
+            "db",
+            label=f"DB: {db_name}" if db_name else "DB: —",
+            state="ok" if db_name else "off",
+        )
+        self.status_bar_widget.update_item(
+            "session",
+            label=f"세션: {session_id}" if session_id else "세션: —",
+            state="ok" if session_id else "off",
+        )
+        self.status_bar_widget.update_item(
+            "tracks",
+            label=f"트랙: {track_count:,}",
+            state="ok" if track_count > 0 else "warn" if track_count == 0 else "off",
+        )
+        self.status_bar_widget.update_item(
+            "lines",
+            label=f"라인: {line_count}",
+            state="ok" if line_count > 0 else "off",
+        )
+
+    # ── 기능 3: Escape — 모든 특수 모드 해제 ──
+
+    def _escape_modes(self) -> None:
+        """Escape 키: 수동 선택·디버그 모드 해제 + 펜딩 포인트 초기화."""
+        if self._manual_pick_mode:
+            self._manual_pick_mode = False
+            self.btn_manual_pick.setChecked(False)
+            self._clear_manual_selection()
+        if self._merge_debug_mode:
+            self._merge_debug_mode = False
+            self.btn_merge_debug.setChecked(False)
+        if self._setting_in_point_index is not None:
+            self._setting_in_point_index = None
+        self._clear_pending_points()
+        self.status_label.setText("모드 해제")
+
+    # ── 기능 4: 궤적 필터 (track_id 검색 + 차종 체크) ──
+
+    def _apply_track_filter(self, *_args: object) -> None:
+        """track_id 검색어와 차종 체크에 따라 궤적 표시/숨김을 토글한다."""
+        keyword = self.track_filter_input.text().strip().lower()
+        enabled_classes: set[str] = set()
+        for cls_name, cb in self._class_checks.items():
+            if cb.isChecked():
+                enabled_classes.add(cls_name.lower())
+        # _class_color_map 의 키 → 표시명 매핑으로 양방향 허용
+        alias_to_display: Dict[str, str] = {}
+        display_names = {c.lower() for c in self._class_checks}
+        for k, _v in self._class_color_map.items():
+            k_low = k.lower()
+            # _class_color_map 에 한글/영문이 모두 들어있다.
+            # 한글 키를 우선으로 매핑한다.
+            if k_low in display_names:
+                alias_to_display[k_low] = k_low
+            else:
+                # 영문 키: 같은 색상인 한글 키 찾기
+                for kk, vv in self._class_color_map.items():
+                    if vv == _v and kk.lower() in display_names:
+                        alias_to_display[k_low] = kk.lower()
+                        break
+        visible = 0
+        hidden = 0
+        for meta in self._track_items_meta:
+            gitem, tid, _pts, _group, cls_name = meta
+            try:
+                if not isValid(gitem):
+                    continue
+            except Exception:
+                continue
+            show = True
+            # 차종 필터
+            cls_low = str(cls_name or "").strip().lower()
+            display_cls = alias_to_display.get(cls_low, cls_low)
+            if display_cls and display_cls not in enabled_classes:
+                show = False
+            # track_id 검색
+            if show and keyword and keyword not in str(tid).lower():
+                show = False
+            gitem.setVisible(show)
+            if show:
+                visible += 1
+            else:
+                hidden += 1
+        if keyword or len(enabled_classes) < len(self._class_checks):
+            self.status_label.setText(f"필터 적용: {visible}개 표시 / {hidden}개 숨김")
+
+    # ── 기능 5: 작업 히스토리 (Undo) ──
+
+    def _push_undo(self, op_type: str, data: Dict, description: str) -> None:
+        """되돌리기 스택에 작업을 추가한다."""
+        self._undo_stack.append({
+            "type": op_type,
+            "data": dict(data),
+            "description": description,
+        })
+        self.btn_undo.setEnabled(True)
+        self.btn_undo.setText(f"↩ 되돌리기 ({len(self._undo_stack)})")
+
+    def _on_undo(self) -> None:
+        """마지막 작업을 되돌린다."""
+        if not self._undo_stack:
+            self._show_msg("되돌리기", "되돌릴 작업이 없습니다.", False)
+            return
+        entry = self._undo_stack.pop()
+        op_type = entry.get("type", "")
+        data = entry.get("data", {})
+        desc = entry.get("description", "")
+        try:
+            if op_type == "merge":
+                self._undo_merge(data)
+            elif op_type == "extrap":
+                self._undo_extrap(data)
+            elif op_type == "manual_merge":
+                self._undo_merge(data)
+            elif op_type == "manual_extrap":
+                self._undo_extrap(data)
+            else:
+                self._show_msg("되돌리기", f"알 수 없는 작업 타입: {op_type}", True)
+                return
+            self.status_label.setText(f"되돌리기 완료: {desc}")
+        except Exception as exc:
+            logger.debug("Undo failed", exc_info=True)
+            self._show_msg("되돌리기 실패", str(exc), True)
+        self.btn_undo.setEnabled(bool(self._undo_stack))
+        self.btn_undo.setText(f"↩ 되돌리기 ({len(self._undo_stack)})" if self._undo_stack else "↩ 되돌리기")
+
+    def _undo_merge(self, data: Dict) -> None:
+        """병합 작업을 되돌린다 — DB에서 해당 병합 레코드를 삭제."""
+        db_path = Path(data.get("db_path", ""))
+        session_id = data.get("session_id", "")
+        pairs = data.get("pairs", [])  # [(source_tid, merged_tid), ...]
+        if not db_path.exists() or not session_id or not pairs:
+            return
+        with sqlite3.connect(db_path) as conn:
+            for source_tid, merged_tid in pairs:
+                for table in ("track_merge_map_manual", "track_merge_map"):
+                    row = conn.execute(
+                        "select 1 from sqlite_master where type='table' and name=? limit 1",
+                        (table,),
+                    ).fetchone()
+                    if not row:
+                        continue
+                    conn.execute(
+                        f"delete from {table} where session_id = ? and source_track_id = ? and merged_track_id = ?",
+                        (str(session_id), str(source_tid), str(merged_tid)),
+                    )
+            conn.commit()
+        self._apply_merge_filter = None
+        self._reload_all()
+
+    def _undo_extrap(self, data: Dict) -> None:
+        """외삽 작업을 되돌린다 — DB에서 해당 virtual_event 레코드를 삭제."""
+        db_path = Path(data.get("db_path", ""))
+        session_id = data.get("session_id", "")
+        track_ids = data.get("track_ids", [])
+        if not db_path.exists() or not session_id or not track_ids:
+            return
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "select 1 from sqlite_master where type='table' and name='track_virtual_events' limit 1"
+            ).fetchone()
+            if row:
+                placeholders = ",".join("?" for _ in track_ids)
+                conn.execute(
+                    f"delete from track_virtual_events where session_id = ? and track_id in ({placeholders})",
+                    [str(session_id)] + [str(t) for t in track_ids],
+                )
+            conn.commit()
+        self._reload_all()
+
+    # ── 기능 6: 배경 프레임 탐색 ──
+
+    def _on_frame_slider_changed(self, frame_no: int) -> None:
+        """프레임 슬라이더 값이 바뀌면 해당 프레임을 배경에 표시한다."""
+        self.frame_slider_label.setText(f"프레임: {frame_no}")
+        if self._video_cap is None:
+            return
+        try:
+            cap = self._video_cap
+            cap.set(cv2.CAP_PROP_POS_FRAMES, float(frame_no))
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                return
+            if self.resize_target and self.resize_target[0] > 0 and self.resize_target[1] > 0:
+                frame = cv2.resize(frame, self.resize_target)
+            h, w = frame.shape[:2]
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            image = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format.Format_RGB888).copy()
+            pixmap = QPixmap.fromImage(image)
+            if self._bg_item is not None and isValid(self._bg_item):
+                self._bg_item.setPixmap(pixmap)
+        except Exception:
+            logger.debug("Suppressed error", exc_info=True)
+
+    def _open_video_for_slider(self) -> None:
+        """영상을 열어 프레임 슬라이더를 활성화한다."""
+        self._close_video_cap()
+        video_path = _resolve_existing_path(self.video_input.text().strip()) if self.video_input.text().strip() else None
+        if not video_path or not video_path.exists():
+            self.frame_slider.setEnabled(False)
+            self._frame_slider_widget.hide()
+            return
+        try:
+            cap = cv2.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                cap.release()
+                return
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            if total <= 0:
+                cap.release()
+                return
+            self._video_cap = cap
+            self._video_total_frames = total
+            self.frame_slider.setRange(0, max(0, total - 1))
+            self.frame_slider.setValue(0)
+            self.frame_slider.setEnabled(True)
+            self._frame_slider_widget.show()
+        except Exception:
+            logger.debug("Suppressed error", exc_info=True)
+
+    def _close_video_cap(self) -> None:
+        """열린 비디오 캡처를 해제한다."""
+        if self._video_cap is not None:
+            try:
+                self._video_cap.release()
+            except Exception:
+                logger.debug("Suppressed error", exc_info=True)
+            self._video_cap = None
+            self._video_total_frames = 0
+
     def _toggle_background(self) -> None:
         self._bg_enabled = not self._bg_enabled
         self.bg_toggle_btn.setText("배경 보임" if self._bg_enabled else "배경 숨김")
+        if self._bg_enabled:
+            self._open_video_for_slider()
+        else:
+            self._close_video_cap()
+            self.frame_slider.setEnabled(False)
+            self._frame_slider_widget.hide()
         self._rebuild_scene_from_cache()
         self._persist_options()
 
