@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDoubleSpinBox,
     QFileDialog,
+    QGraphicsOpacityEffect,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QInputDialog,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -49,6 +51,7 @@ from src.ui.line_drawer import LineDrawerWindow
 from src.ui.model_selector import ModelComboBox
 from src.ui.theme import DARK_DIALOG_STYLE, MAIN_WINDOW_STYLE
 from src.ui.vehicle_preview import VehiclePreviewWindow
+from src.ui.widgets import StatusBar, WorkflowStepper, section_divider
 from src.ui.video_selector import select_video
 from src.ui.workers import CountWorker, PipelineWorker
 from src.ui.trajectory_viewer2 import TrajectoryViewer2Window
@@ -216,16 +219,14 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(container)
 
     def _header(self) -> QWidget:
-        # Dedicated top container keeps layout spacing stable.
-        widget = QWidget()
-        layout = QVBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        widget.setLayout(layout)
-        return widget
+        self.stepper = WorkflowStepper(
+            ["설정", "Colab", "궤적 DB", "카운팅", "결과"],
+        )
+        return self.stepper
 
     def _session_video_box(self) -> QGroupBox:
-        box = QGroupBox("교차로명 및 영상")
+        box = QGroupBox("📍 교차로 · 영상")
+        box.setObjectName("groupTeal")
         layout = QGridLayout()
         layout.setVerticalSpacing(8)
         layout.setHorizontalSpacing(10)
@@ -362,7 +363,8 @@ class MainWindow(QMainWindow):
             self.db_path_input.setText(suggested)
 
     def _settings_box(self) -> QGroupBox:
-        box = QGroupBox("분석 설정")
+        box = QGroupBox("⚙️ 분석 설정")
+        box.setObjectName("groupTeal")
         layout = QGridLayout()
         layout.setVerticalSpacing(8)
         layout.setHorizontalSpacing(12)
@@ -410,11 +412,13 @@ class MainWindow(QMainWindow):
         default_flush = str(int(self.cfg_defaults.get("flush_interval_minutes", 15)))
         if default_flush in [self.flush_combo.itemText(i) for i in range(self.flush_combo.count())]:
             self.flush_combo.setCurrentText(default_flush)
+        self.flush_combo.setToolTip("궤적 데이터를 DB에 기록하는 주기 (분 단위)")
 
         # Track end threshold (frames)
         self.max_idle_frames_spin = QSpinBox()
         self.max_idle_frames_spin.setRange(1, 10_000)
         self.max_idle_frames_spin.setValue(int(self.cfg_defaults.get("max_idle_frames", 30)))
+        self.max_idle_frames_spin.setToolTip("이 프레임 수 동안 감지되지 않으면 ID 종료 처리")
 
         # Model selection: models 폴더를 자동으로 훑어 목록으로 보여준다.
         self.model_combo = ModelComboBox("models")
@@ -428,7 +432,7 @@ class MainWindow(QMainWindow):
 
         # DB path for detection/tracking
         self.db_path_input = QLineEdit(self.cfg_defaults.get("db_path", "output/tracks.sqlite"))
-        db_path_btn = QPushButton("DB 선택")
+        db_path_btn = QPushButton("경로 설정")
         db_path_btn.setFixedWidth(160)
         db_path_btn.clicked.connect(self._choose_detect_db)
         try:
@@ -484,7 +488,8 @@ class MainWindow(QMainWindow):
 
     def _count_box(self) -> QGroupBox:
         """Build controls for DB-based counting."""
-        box = QGroupBox("카운팅 설정 (DB 분석)")
+        box = QGroupBox("📊 카운팅 설정")
+        box.setObjectName("groupBlue")
         layout = QGridLayout()
         layout.setVerticalSpacing(8)
         layout.setHorizontalSpacing(12)
@@ -581,40 +586,94 @@ class MainWindow(QMainWindow):
         box.setLayout(layout)
         return box
 
-    def _buttons_row(self) -> QHBoxLayout:
-        detect_btn = QPushButton("감지/궤적 저장(DB)")
-        detect_btn.clicked.connect(self.on_run)
-        traj_btn = QPushButton("궤적보기/수정")
-        traj_btn.clicked.connect(self.on_show_trajectories)
+    def _buttons_row(self) -> QVBoxLayout:
+        outer = QVBoxLayout()
+        outer.setSpacing(8)
 
-        count_btn = QPushButton("교차로 카운팅 시작")
-        count_btn.clicked.connect(self.on_count)
-        approach_btn = QPushButton("접근로 카운팅 시작")
-        approach_btn.clicked.connect(self.on_count_approach)
-        preview_btn = QPushButton("Extract Images + Labels")
-        preview_btn.clicked.connect(self.on_extract_images)
-        preview_vehicle_btn = QPushButton("차종 인식 미리보기")
-        preview_vehicle_btn.clicked.connect(self.on_preview_vehicle)
-        colab_btn = QPushButton("Colab 코드 생성")
+        # ── 구분선 ──
+        outer.addWidget(section_divider("▼ 실행"))
+
+        # ── Row 1: Colab 코드 생성 / 설정 저장 / 차종 미리보기 ──
+        colab_btn = QPushButton("📋 Colab 코드 생성")
+        colab_btn.setProperty("btnType", "primary")
         colab_btn.clicked.connect(self.on_export_colab)
-        quit_btn = QPushButton("프로그램 종료")
-        quit_btn.setStyleSheet("QPushButton { color: #ff4d4d; font-weight: 800; }")
-        quit_btn.clicked.connect(self.on_quit_program)
-        save_btn = QPushButton("설정 저장")
+
+        save_btn = QPushButton("💾 설정 저장")
         save_btn.clicked.connect(self._save_config)
 
-        btns = QHBoxLayout()
-        btns.addWidget(detect_btn)
-        btns.addWidget(traj_btn)
-        btns.addWidget(count_btn)
-        btns.addWidget(approach_btn)
-        btns.addWidget(save_btn)
-        btns.addWidget(preview_btn)
-        btns.addWidget(preview_vehicle_btn)
-        btns.addWidget(colab_btn)
-        btns.addWidget(quit_btn)
-        btns.addStretch()
-        return btns
+        preview_vehicle_btn = QPushButton("🔍 차종 미리보기")
+        preview_vehicle_btn.clicked.connect(self.on_preview_vehicle)
+
+        row1 = QHBoxLayout()
+        row1.addWidget(colab_btn)
+        row1.addWidget(save_btn)
+        row1.addWidget(preview_vehicle_btn)
+        row1.addStretch()
+        outer.addLayout(row1)
+
+        # ── Row 2: 궤적보기/수정 / 교차로 카운팅 / 접근로 카운팅 ──
+        traj_btn = QPushButton("👁 궤적보기/수정")
+        traj_btn.setProperty("btnType", "secondary")
+        traj_btn.clicked.connect(self.on_show_trajectories)
+
+        count_btn = QPushButton("📐 교차로 카운팅")
+        count_btn.setProperty("btnType", "primary")
+        count_btn.clicked.connect(self.on_count)
+
+        approach_btn = QPushButton("📐 접근로 카운팅")
+        approach_btn.setProperty("btnType", "primary")
+        approach_btn.clicked.connect(self.on_count_approach)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(traj_btn)
+        row2.addWidget(count_btn)
+        row2.addWidget(approach_btn)
+        row2.addStretch()
+        outer.addLayout(row2)
+
+        # ── 로컬실행 그룹 (반투명) ──
+        local_box = QGroupBox("🖥️ 영상분석 및 궤적저장 (로컬실행)")
+        local_box.setObjectName("groupGray")
+        opacity = QGraphicsOpacityEffect()
+        opacity.setOpacity(0.75)
+        local_box.setGraphicsEffect(opacity)
+
+        detect_btn = QPushButton("▶ 로컬 감지/궤적 저장(DB)")
+        detect_btn.setProperty("btnType", "secondary")
+        detect_btn.clicked.connect(self.on_run)
+
+        extract_btn = QPushButton("🖼 Extract Images + Labels")
+        extract_btn.clicked.connect(self.on_extract_images)
+
+        gpu_label = QLabel("⚠️ GPU 필요")
+        gpu_label.setStyleSheet("color: #f59e0b; font-weight: 600;")
+
+        local_row = QHBoxLayout()
+        local_row.addWidget(detect_btn)
+        local_row.addWidget(extract_btn)
+        local_row.addWidget(gpu_label)
+        local_row.addStretch()
+        local_box.setLayout(local_row)
+        outer.addWidget(local_box)
+
+        # ── 하단: StatusBar + 종료 ──
+        self.status_bar = StatusBar()
+        self.status_bar.add_item("model", "모델: –", "off")
+        self.status_bar.add_item("db", "DB: –", "off")
+        self.status_bar.add_item("gpu", "GPU: –", "off")
+        self._update_status_bar()
+
+        quit_btn = QPushButton("종료")
+        quit_btn.setProperty("btnType", "danger")
+        quit_btn.setFixedWidth(80)
+        quit_btn.clicked.connect(self.on_quit_program)
+
+        bottom_row = QHBoxLayout()
+        bottom_row.addWidget(self.status_bar, stretch=1)
+        bottom_row.addWidget(quit_btn)
+        outer.addLayout(bottom_row)
+
+        return outer
 
     def on_extract_images(self) -> None:
         """
@@ -947,10 +1006,15 @@ class MainWindow(QMainWindow):
         self._viewers.append(viewer)
 
     def _log_box(self) -> QGroupBox:
-        box = QGroupBox("로그")
+        box = QGroupBox("📝 로그")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         layout = QVBoxLayout()
+        layout.addWidget(self.progress_bar)
         layout.addWidget(self.log_view)
         box.setLayout(layout)
         return box
@@ -961,6 +1025,39 @@ class MainWindow(QMainWindow):
             app.setStyleSheet(MAIN_WINDOW_STYLE)
         else:
             self.setStyleSheet(MAIN_WINDOW_STYLE)
+
+    def _update_status_bar(self) -> None:
+        """StatusBar 항목을 현재 설정값으로 갱신한다."""
+        if not hasattr(self, "status_bar"):
+            return
+        # 모델
+        model = self._current_model_path()
+        if model and Path(model).exists():
+            self.status_bar.update_item("model", f"모델: {Path(model).name}", "ok")
+        elif model:
+            self.status_bar.update_item("model", f"모델: {Path(model).name}", "warn")
+        else:
+            self.status_bar.update_item("model", "모델: –", "off")
+        # DB
+        db_text = ""
+        if hasattr(self, "db_path_input"):
+            db_text = self.db_path_input.text().strip()
+        if db_text and Path(db_text).exists():
+            self.status_bar.update_item("db", f"DB: {Path(db_text).name}", "ok")
+        elif db_text:
+            self.status_bar.update_item("db", f"DB: {Path(db_text).name}", "warn")
+        else:
+            self.status_bar.update_item("db", "DB: –", "off")
+        # GPU
+        try:
+            import torch
+            if torch.cuda.is_available():
+                gpu_name = torch.cuda.get_device_name(0)
+                self.status_bar.update_item("gpu", f"GPU: {gpu_name}", "ok")
+            else:
+                self.status_bar.update_item("gpu", "GPU: 없음", "off")
+        except Exception:
+            self.status_bar.update_item("gpu", "GPU: 확인불가", "off")
 
     # ------------------------------------------------------------------ 모델/차종
 
@@ -1080,10 +1177,10 @@ class MainWindow(QMainWindow):
 
     def _choose_detect_db(self) -> None:
         start = Path(self.db_path_input.text().strip() or "output").resolve()
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = QFileDialog.getSaveFileName(
             self,
-            "감지 DB 선택",
-            str(start.parent if start.exists() else Path("output").resolve()),
+            "감지 DB 경로 설정",
+            str(start if start.suffix else start.parent),
             "SQLite Files (*.sqlite *.db);;All Files (*)",
         )
         if path:
