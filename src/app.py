@@ -1,4 +1,4 @@
-﻿import json
+import json
 import logging
 import re
 import sqlite3
@@ -39,6 +39,11 @@ from src.config.loader import load_app_config, load_app_config_with_state, load_
 from src.config.model_profiles import ModelProfileStore
 from src.config.model_resolver import can_auto_download_model, ensure_model_source, resolve_model_source
 from src.db.queries import distinct_vehicle_types
+from src.pipeline.image_extractor import (
+    detection_to_yolo_lines,
+    extract_frames,
+    next_start_index,
+)
 from src.services.colab_export import (
     build_colab_cell,
     build_colab_config,
@@ -778,22 +783,7 @@ class MainWindow(QMainWindow):
             step = max(1, int(round(src_fps / sample_extract_fps)))
 
         # Resume numbering if files already exist.
-        start_idx = 1
-        try:
-            pat = re.compile(rf"^{re.escape(prefix)}_(\d{{6}})\.jpg$", re.IGNORECASE)
-            max_idx = 0
-            for p_img in images_dir.glob(f"{prefix}_*.jpg"):
-                m = pat.match(p_img.name)
-                if not m:
-                    continue
-                try:
-                    max_idx = max(max_idx, int(m.group(1)))
-                except Exception:
-                    continue
-            if max_idx > 0:
-                start_idx = max_idx + 1
-        except Exception:
-            logger.debug("Suppressed error", exc_info=True)
+        start_idx = next_start_index(images_dir, prefix)
 
         def log(msg: str) -> None:
             try:
@@ -814,32 +804,16 @@ class MainWindow(QMainWindow):
             log(f"[extract:limit] first_n={first_n_limit}")
         log(f"[extract:dir] {images_dir}")
 
-        frame_id = 0
-        saved = 0
-        img_idx = start_idx
-        extracted_paths = []
-        try:
-            while True:
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    break
-                if frame_id % step == 0:
-                    out_path = images_dir / f"{prefix}_{img_idx:06d}.jpg"
-                    ok2 = bool(cv2.imwrite(str(out_path), frame))
-                    if not ok2:
-                        log(f"[extract:warn] save failed: {out_path}")
-                    else:
-                        saved += 1
-                        img_idx += 1
-                        extracted_paths.append(out_path)
-                        if first_n_limit > 0 and saved >= first_n_limit:
-                            break
-                frame_id += 1
-                if frame_id % 2000 == 0:
-                    log(f"[extract:progress] frame={frame_id} saved={saved}")
-        finally:
-            cap.release()
-        log(f"[extract:done] saved={saved}")
+        extracted_paths = extract_frames(
+            cap,
+            images_dir,
+            prefix,
+            step,
+            first_n_limit,
+            start_idx,
+            log_cb=log,
+        )
+        log(f"[extract:done] saved={len(extracted_paths)}")
 
         labels_dir = extract_root / "labels"
         labels_dir.mkdir(parents=True, exist_ok=True)
@@ -885,30 +859,6 @@ class MainWindow(QMainWindow):
             log(f"[label:warn] failed to load class mapping: {class_mapping_path} ({exc})")
 
         class_mapping = {str(k).strip().lower(): str(v).strip().lower() for k, v in dict(raw_mapping).items()}
-        class_name_to_id = {
-            "person": 0,
-            "small_bus": 1,
-            "passenger_car": 2,
-            "medium_truck": 3,
-            "large_truck": 4,
-            "large_bus": 5,
-            "etc": 6,
-            "small_truck": 7,
-            # Fallback names for generic models
-            "car": 2,
-            "bus": 5,
-            "truck": 4,
-        }
-        mapped_name_to_id = {
-            "소형버스": 1,
-            "승용차": 2,
-            "중형화물": 3,
-            "대형화물": 4,
-            "대형버스": 5,
-            "기타": 6,
-            "소형화물": 7,
-        }
-        ignore_labels = {"ignore", "ignored", "none", "", "person"}
 
         # Label newly extracted images first; if none extracted in this run, continue on existing images.
         if extracted_paths:
@@ -947,26 +897,7 @@ class MainWindow(QMainWindow):
                 no_det_count += 1
                 continue
 
-            lines = []
-            for box in boxes:
-                try:
-                    cls_raw = int(box.cls[0])
-                    cls_name = str(label_model.names.get(cls_raw, str(cls_raw))).strip().lower()
-                    mapped_name = class_mapping.get(cls_name, cls_name)
-                    if mapped_name in ignore_labels:
-                        continue
-                    cls = class_name_to_id.get(cls_name)
-                    if cls is None:
-                        cls = class_name_to_id.get(mapped_name)
-                    if cls is None:
-                        cls = mapped_name_to_id.get(mapped_name, cls_raw)
-                    if cls == 0:
-                        continue
-                    x_c, y_c, w, h = box.xywhn[0].tolist()
-                except Exception:
-                    continue
-
-                lines.append(f"{cls} {x_c:.6f} {y_c:.6f} {w:.6f} {h:.6f}\n")
+            lines = detection_to_yolo_lines(boxes, label_model.names, class_mapping)
 
             if not lines:
                 no_det_count += 1
