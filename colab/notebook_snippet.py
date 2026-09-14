@@ -295,7 +295,7 @@ if USE_LOCAL_VIDEO:
     print("VIDEO(local):", VIDEO_TO_USE, "exists:", VIDEO_TO_USE.exists())
 
 # 5) runtime config 생성 (DB 위치 선택)
-cfg_src_path = ROOT / "colab" / "app_config_drive.json"
+cfg_src_path = ROOT / "colab" / "app_config_colab.json"
 cfg = json.loads(cfg_src_path.read_text(encoding="utf-8"))
 cfg["project_name"] = PROJECT_NAME
 cfg["junction_name"] = JUNCTION_NAME
