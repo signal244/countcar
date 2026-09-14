@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 import json
 import zlib
@@ -5,6 +6,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from .schema import SCHEMA_VERSION, init_db
+
+logger = logging.getLogger(__name__)
 
 FIELDS: List[str] = [
     "schema_version",
@@ -65,20 +68,27 @@ class TrackDBWriter:
     def flush(self) -> None:
         if not self._buffer:
             return
-        cur = self.conn.cursor()
-        cur.executemany(INSERT_SQL, self._buffer)
-        self.conn.commit()
+        with self.conn:
+            cur = self.conn.cursor()
+            cur.executemany(INSERT_SQL, self._buffer)
         self._buffer.clear()
 
     def close(self) -> None:
-        self.flush()
-        self.conn.close()
+        try:
+            self.flush()
+        finally:
+            self.conn.close()
 
     def __enter__(self) -> "TrackDBWriter":
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> Optional[bool]:
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            if exc_type is None:
+                raise
+            logger.error("Failed to flush/close DB after an earlier error", exc_info=True)
         return None
 
 
@@ -174,32 +184,39 @@ class TrackTrajDBWriter:
             return
         row = self._to_row(record, points, checkpoint=True)
         session_id, camera_id, track_id = self._identity(row)
-        self.conn.execute(
-            "DELETE FROM track_trajs WHERE session_id=? AND camera_id=? AND track_id=? AND extra=?",
-            (session_id, camera_id, track_id, CHECKPOINT_EXTRA),
-        )
-        self.conn.execute(TRACK_TRAJ_INSERT_SQL, row)
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM track_trajs WHERE session_id=? AND camera_id=? AND track_id=? AND extra=?",
+                (session_id, camera_id, track_id, CHECKPOINT_EXTRA),
+            )
+            self.conn.execute(TRACK_TRAJ_INSERT_SQL, row)
 
     def flush(self) -> None:
         if not self._buffer:
             return
-        cur = self.conn.cursor()
-        cur.executemany(
-            "DELETE FROM track_trajs WHERE session_id=? AND camera_id=? AND track_id=? AND extra=?",
-            [(*self._identity(row), CHECKPOINT_EXTRA) for row in self._buffer],
-        )
-        cur.executemany(TRACK_TRAJ_INSERT_SQL, self._buffer)
-        self.conn.commit()
+        with self.conn:
+            cur = self.conn.cursor()
+            cur.executemany(
+                "DELETE FROM track_trajs WHERE session_id=? AND camera_id=? AND track_id=? AND extra=?",
+                [(*self._identity(row), CHECKPOINT_EXTRA) for row in self._buffer],
+            )
+            cur.executemany(TRACK_TRAJ_INSERT_SQL, self._buffer)
         self._buffer.clear()
 
     def close(self) -> None:
-        self.flush()
-        self.conn.close()
+        try:
+            self.flush()
+        finally:
+            self.conn.close()
 
     def __enter__(self) -> "TrackTrajDBWriter":
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> Optional[bool]:
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            if exc_type is None:
+                raise
+            logger.error("Failed to flush/close DB after an earlier error", exc_info=True)
         return None

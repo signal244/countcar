@@ -7,6 +7,9 @@
 from __future__ import annotations
 
 import sqlite3
+from collections import Counter
+
+from src.db.trajectories import iter_trajectory_headers
 from contextlib import closing
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -35,6 +38,10 @@ def distinct_vehicle_types(
         return {}
     try:
         with closing(sqlite3.connect(str(path))) as conn:
+            if table_name == "track_trajs":
+                counts = Counter(name.strip() for _sess, _cam, _tid, name, _start
+                                 in iter_trajectory_headers(conn, session_id) if name.strip())
+                return dict(counts.most_common())
             if not _table_exists(conn, table_name):
                 return {}
             sql = (

@@ -23,7 +23,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 from src.db.schema import SCHEMA_VERSION, init_db
-from src.db.writer import decode_traj
+from src.db.trajectories import iter_trajectories, list_trajectory_sessions, trajectory_end_sec
 from src.pipeline.geometry import bound_in_direction as _bound_in_dir
 from src.pipeline.geometry import segment_intersection as _segment_intersection
 from src.pipeline.track_merge import load_effective_track_merge_map
@@ -243,60 +243,14 @@ def merge_crossings(cross_df: pd.DataFrame, mapping: Dict[int, int]) -> pd.DataF
 
 
 def load_traj_table(db_path: Path, session_id: Optional[str] = None) -> pd.DataFrame:
-    """Load per-point trajectory table.
-
-    - If `track_trajs` exists: decode compressed per-track trajectories into rows.
-    - Else: fallback to legacy frame-level `tracks` table.
-    """
-    with closing(sqlite3.connect(db_path)) as conn, conn:
-        try:
-            row = conn.execute(
-                "select name from sqlite_master where type='table' and name='track_trajs'"
-            ).fetchone()
-            has_traj = bool(row)
-        except Exception:
-            has_traj = False
-
-        if has_traj:
-            sql = (
-                "select track_id, coalesce(vehicle_type, class_name) as cls_name, traj "
-                "from track_trajs where traj is not null"
-            )
-            params = None
-            if session_id:
-                sql += " and session_id = ?"
-                params = (session_id,)
-            rows = conn.execute(sql, params or ()).fetchall()
-            out_rows: List[Dict] = []
-            for tid, cls, blob in rows:
-                pts = decode_traj(blob) or []
-                for _fid, tms, x, y in pts:
-                    out_rows.append(
-                        {"track_id": str(tid), "ts_sec": float(tms) / 1000.0, "x": float(x), "y": float(y), "cls_name": str(cls or "")}
-                    )
-            return pd.DataFrame(out_rows) if out_rows else pd.DataFrame(columns=["track_id", "ts_sec", "x", "y", "cls_name"])
-
-        sql = (
-            "select track_id, timestamp_ms/1000.0 as ts_sec, center_x as x, center_y as y, "
-            "coalesce(vehicle_type, class_name) as cls_name "
-            "from tracks where center_x is not null and center_y is not null"
-        )
-        params = None
-        if session_id:
-            sql += " and session_id = ?"
-            params = (session_id,)
-        traj = pd.read_sql(sql, conn, params=params)
-    return traj
-
-
-def _has_track_trajs(db_path: Path) -> bool:
-    try:
-        with closing(sqlite3.connect(db_path)) as conn, conn:
-            row = conn.execute("select 1 from sqlite_master where type='table' and name='track_trajs'").fetchone()
-            return bool(row)
-    except Exception:
-        logger.debug("Suppressed error", exc_info=True)
-        return False
+    """Load modern and legacy points, preferring the modern copy of each track."""
+    rows = []
+    with closing(sqlite3.connect(db_path)) as conn:
+        for _sess, _cam, tid, name, points in iter_trajectories(conn, session_id):
+            for _fid, tms, x, y in points:
+                rows.append({"track_id": tid, "ts_sec": float(tms) / 1000.0,
+                             "x": float(x), "y": float(y), "cls_name": name})
+    return pd.DataFrame(rows, columns=["track_id", "ts_sec", "x", "y", "cls_name"])
 
 
 def _load_track_merge_map(db_path: Path, session_id: Optional[str]) -> Dict[str, str]:
@@ -603,7 +557,7 @@ def _persist_detected_line_events(
     deleted_session = str(session_filter or "")
     inserted = 0
     with closing(sqlite3.connect(Path(db_path))) as conn, conn:
-        if session_filter:
+        if session_filter is not None:
             conn.execute(
                 "delete from track_line_events where session_id = ? and event_source = 'detected'",
                 (deleted_session,),
@@ -837,25 +791,14 @@ def count_track_trajs_streaming(
                 (float(record["ts_sec"]), str(record["line_id"])) for record in detected_records
             ]
 
-    with closing(sqlite3.connect(db_path)) as conn, conn:
-        sql = (
-            "select session_id, camera_id, track_id, coalesce(vehicle_type, class_name) as cls_name, traj "
-            "from track_trajs where traj is not null"
-        )
-        params: List[object] = []
-        if session_id:
-            sql += " and session_id = ?"
-            params.append(session_id)
-        sql += " order by track_id"
-
+    with closing(sqlite3.connect(db_path)) as conn:
         loaded = 0
         merged_sources = 0
-        for sess, cam, tid, cls_name, blob in conn.execute(sql, tuple(params)):
+        for sess, cam, tid, cls_name, pts_raw in iter_trajectories(conn, session_id):
             tid_s = str(tid)
             rep_tid = str(merge_map.get(tid_s, tid_s))
             if rep_tid != tid_s:
                 merged_sources += 1
-            pts_raw = decode_traj(blob) or []
             if len(pts_raw) < 2:
                 continue
             loaded += 1
@@ -871,7 +814,7 @@ def count_track_trajs_streaming(
         cls_name, sess, cam = grouped_meta.get(tid_s, ("", str(session_id or ""), ""))
         process_track(tid_s, points, cls_name, sess, cam)
 
-    log(f"[count] loaded track_trajs tracks={loaded} canonical_tracks={len(events_by_tid)} merged_sources={merged_sources}")
+    log(f"[count] loaded trajectories tracks={loaded} canonical_tracks={len(events_by_tid)} merged_sources={merged_sources}")
     detected_saved = _persist_detected_line_events(
         Path(db_path),
         detected_records_by_tid,
@@ -1208,24 +1151,9 @@ def run_count(
         if log_cb is not None:
             log_cb(msg)
 
-    def _probe_analysis_end_sec() -> Optional[float]:
-        try:
-            with closing(sqlite3.connect(Path(db_path))) as conn, conn:
-                sql = "select max(end_ts_ms) from track_trajs"
-                params: List[object] = []
-                if session_id:
-                    sql += " where session_id = ?"
-                    params.append(session_id)
-                row = conn.execute(sql, tuple(params)).fetchone()
-                if row and row[0] is not None:
-                    return float(row[0]) / 1000.0
-        except Exception:
-            logger.debug("Suppressed error", exc_info=True)
-            return None
-        return None
-
     interval_sec = interval_min * 60
-    analysis_end_sec = _probe_analysis_end_sec()
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        analysis_end_sec = trajectory_end_sec(conn, session_id)
     lines_raw, orig_w, orig_h = load_lines_with_scale(Path(lines_path))
     # 라인 좌표를 트랙 좌표계(리사이즈 기준)로 스케일
     def _scale_lines(lines: List[Dict]) -> List[Dict]:
@@ -1245,157 +1173,48 @@ def run_count(
     lines = _scale_lines(lines_raw)
     mode_norm = str(mode or "turn").strip().lower()
 
-    if _has_track_trajs(Path(db_path)):
-        sessions: List[Optional[str]] = [session_id]
-        if not session_id:
-            with closing(sqlite3.connect(Path(db_path))) as conn, conn:
-                sessions = [
-                    str(row[0])
-                    for row in conn.execute(
-                        "select distinct session_id from track_trajs where session_id is not null order by session_id"
-                    )
-                    if str(row[0] or "").strip()
-                ]
-            if not sessions:
-                sessions = [None]
-            elif len(sessions) > 1:
-                log(f"[count] 전체 선택: {len(sessions)}개 세션을 각각 계산한 뒤 합산합니다")
+    sessions: List[Optional[str]] = [session_id]
+    if session_id is None:
+        with closing(sqlite3.connect(Path(db_path))) as conn:
+            sessions = list_trajectory_sessions(conn)
+        if len(sessions) > 1:
+            log(f"[count] 전체 선택: {len(sessions)}개 세션을 각각 계산한 뒤 합산합니다")
 
-        multi_parts: List[pd.DataFrame] = []
-        final_parts: List[pd.DataFrame] = []
-        for selected_session in sessions:
-            part_multi, part_final = count_track_trajs_streaming(
-                db_path=Path(db_path),
-                lines=lines,
-                interval_sec=interval_sec,
-                reconnect_dist=reconnect_dist,
-                reconnect_gap=reconnect_gap,
-                reconnect_passes=reconnect_passes,
-                extrap_horizon=extrap_horizon,
-                session_id=selected_session,
-                mode=mode_norm,
-                log_cb=log_cb,
-                use_track_merge=use_track_merge,
-                use_virtual_events=use_virtual_events,
-            )
-            multi_parts.append(part_multi)
-            final_parts.append(part_final)
+    multi_parts: List[pd.DataFrame] = []
+    final_parts: List[pd.DataFrame] = []
+    for selected_session in sessions:
+        part_multi, part_final = count_track_trajs_streaming(
+            db_path=Path(db_path),
+            lines=lines,
+            interval_sec=interval_sec,
+            reconnect_dist=reconnect_dist,
+            reconnect_gap=reconnect_gap,
+            reconnect_passes=reconnect_passes,
+            extrap_horizon=extrap_horizon,
+            session_id=selected_session,
+            mode=mode_norm,
+            log_cb=log_cb,
+            use_track_merge=use_track_merge,
+            use_virtual_events=use_virtual_events,
+        )
+        multi_parts.append(part_multi)
+        final_parts.append(part_final)
 
-        def _sum_session_parts(parts: List[pd.DataFrame]) -> pd.DataFrame:
-            non_empty = [part for part in parts if not part.empty]
-            if not non_empty:
-                return pd.DataFrame(columns=["slot", "line_from", "line_to", "cls_name", "count"])
-            return (
-                pd.concat(non_empty, ignore_index=True)
-                .groupby(["slot", "line_from", "line_to", "cls_name"], as_index=False)["count"]
-                .sum()
-                .sort_values(["slot", "line_from", "line_to", "cls_name"])
-                .reset_index(drop=True)
-            )
-
-        counts_multi = _sum_session_parts(multi_parts)
-        counts_final = _sum_session_parts(final_parts)
-        log(f"[count] multi-cross rows={len(counts_multi)} final rows={len(counts_final)}")
-    else:
-        traj = load_traj_table(Path(db_path), session_id=session_id)
-        cross = compute_crossings(traj, lines)
-        log(f"[count] rows: crossings={len(cross)} traj={len(traj)}")
-
-        cross_sorted = cross.sort_values("ts_sec")
-        grouped = cross_sorted.groupby("track_id")
-
-        # 1) 2회 이상 교차
-        multi_ids = [tid for tid, g in grouped if len(g) >= 2]
-        multi = cross_sorted[cross_sorted.track_id.isin(multi_ids)]
-        counts_multi = count_from_pairs(
-            multi.groupby("track_id").first().reset_index(),
-            multi.groupby("track_id").last().reset_index(),
-            interval_sec,
+    def _sum_session_parts(parts: List[pd.DataFrame]) -> pd.DataFrame:
+        non_empty = [part for part in parts if not part.empty]
+        if not non_empty:
+            return pd.DataFrame(columns=["slot", "line_from", "line_to", "cls_name", "count"])
+        return (
+            pd.concat(non_empty, ignore_index=True)
+            .groupby(["slot", "line_from", "line_to", "cls_name"], as_index=False)["count"]
+            .sum()
+            .sort_values(["slot", "line_from", "line_to", "cls_name"])
+            .reset_index(drop=True)
         )
 
-        # 2) 단일 교차 및 미교차 트랙 재연결
-        candidate_ids = [tid for tid, g in grouped if len(g) <= 1]
-        traj_start, traj_end = endpoints(traj)
-        cross_work = cross_sorted.copy()
-        candidate_work = set(candidate_ids)
-        for _ in range(max(0, reconnect_passes)):
-            mapping = attempt_reconnect(candidate_work, cross_work, traj_start, traj_end, reconnect_gap, reconnect_dist)
-            if not mapping:
-                break
-            cross_work = merge_crossings(cross_work, mapping)
-            grouped = cross_work.sort_values("ts_sec").groupby("track_id")
-            candidate_work = {tid for tid, g in grouped if len(g) <= 1}
-
-        # 3) 외삽으로 2번째 교차 추가 (옵션: extrap_horizon > 0 일 때만)
-        grouped = cross_work.sort_values("ts_sec").groupby("track_id")
-        still_single = {tid for tid, g in grouped if len(g) == 1}
-        still_need = {tid for tid, g in grouped if len(g) <= 1}
-        if still_need and extrap_horizon and float(extrap_horizon) > 0:
-            traj_pts = {
-                tid: g[["x", "y"]].to_numpy().tolist()
-                for tid, g in traj.sort_values("ts_sec").groupby("track_id")
-            }
-            new_rows = []
-            start_by_tid = {int(r.track_id): float(r.start_ts) for _, r in traj_start.iterrows()}
-            end_by_tid = {int(r.track_id): float(r.end_ts) for _, r in traj_end.iterrows()}
-            cls_by_tid_local = {}
-            for tid, g in traj.sort_values("ts_sec").groupby("track_id"):
-                cls_series = g["cls_name"].dropna()
-                cls_by_tid_local[int(tid)] = str(cls_series.iloc[0]) if not cls_series.empty else ""
-
-            shown = 0
-            max_detail = 50
-            for tid in still_need:
-                pts = traj_pts.get(tid, [])
-                head_hit, tail_hit = extrapolate_line_hits(pts, lines, extrap_horizon)
-
-                if tid in still_single:
-                    existing = grouped.get_group(tid)
-                    t0 = float(existing.ts_sec.iloc[0])
-                    line0 = str(existing.line_name.iloc[0])
-                    cls0 = str(existing.cls_name.iloc[0])
-                    if head_hit and str(head_hit) != line0:
-                        new_rows.append({"track_id": tid, "ts_sec": t0 - 1e-3, "line_name": str(head_hit), "cls_name": cls0})
-                    new_rows.append({"track_id": tid, "ts_sec": t0, "line_name": line0, "cls_name": cls0})
-                    if tail_hit and str(tail_hit) != line0 and str(tail_hit) != str(head_hit or ""):
-                        new_rows.append({"track_id": tid, "ts_sec": t0 + 1e-3, "line_name": str(tail_hit), "cls_name": cls0})
-                    if log_cb is not None and (head_hit or tail_hit) and shown < max_detail:
-                        log(f"[count][extrap] tid={tid} 1hit({line0}) -> head={head_hit} tail={tail_hit}")
-                        shown += 1
-                    continue
-
-                # 미교차(0회): head/tail 둘 다 있으면 2회 교차로 간주
-                if head_hit and tail_hit and str(head_hit) != str(tail_hit):
-                    t0 = float(start_by_tid.get(tid, 0.0))
-                    t1 = float(end_by_tid.get(tid, t0))
-                    cls0 = str(cls_by_tid_local.get(tid, ""))
-                    new_rows.append({"track_id": tid, "ts_sec": t0, "line_name": str(head_hit), "cls_name": cls0})
-                    new_rows.append({"track_id": tid, "ts_sec": t1, "line_name": str(tail_hit), "cls_name": cls0})
-                    if log_cb is not None and shown < max_detail:
-                        log(f"[count][extrap] tid={tid} 0hit -> head={head_hit} tail={tail_hit} (t0={t0:.3f}, t1={t1:.3f})")
-                        shown += 1
-            if new_rows:
-                cross_work = pd.concat([cross_work, pd.DataFrame(new_rows)], ignore_index=True)
-                if log_cb is not None and shown >= max_detail:
-                    log(f"[count] extrap detail logs truncated (max {max_detail})")
-
-        # 최종 카운트
-        grouped = cross_work.sort_values("ts_sec").groupby("track_id")
-        multi_ids_final = [tid for tid, g in grouped if len(g) >= 2]
-        multi_final = cross_work[cross_work.track_id.isin(multi_ids_final)]
-        counts_final = count_from_pairs(
-            multi_final.groupby("track_id").first().reset_index(),
-            multi_final.groupby("track_id").last().reset_index(),
-            interval_sec,
-        )
-
-        if log_cb is not None:
-            log(f"[count] multi-cross rows={len(counts_multi)} final rows={len(counts_final)}")
-        else:
-            print("[초기 2회 이상 교차 카운트]")
-            print(counts_multi.head())
-            print("\n[재연결/외삽 후 최종 카운트]")
-            print(counts_final.head())
+    counts_multi = _sum_session_parts(multi_parts)
+    counts_final = _sum_session_parts(final_parts)
+    log(f"[count] multi-cross rows={len(counts_multi)} final rows={len(counts_final)}")
 
     counts_out = counts_final
 

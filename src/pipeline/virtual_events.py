@@ -420,8 +420,8 @@ def load_virtual_events(
             "from track_virtual_events where 1=1"
         )
         params: List[object] = []
-        if session_id:
-            sql += " and session_id = ?"
+        if session_id is not None:
+            sql += " and coalesce(session_id, '') = ?"
             params.append(session_id)
         for tid, ts_ms, line_id, bound, inout in conn.execute(sql, tuple(params)):
             tid_s = str(tid)

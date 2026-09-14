@@ -3,3 +3,7 @@ opencv-python>=4.8
 numpy>=1.24
 PyYAML>=6.0
 pytz>=2024.1
+
+# Counting CLI and Excel export
+pandas>=1.5
+openpyxl>=3.1

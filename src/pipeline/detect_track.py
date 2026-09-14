@@ -1,5 +1,6 @@
 import logging
 import math
+import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -195,154 +196,181 @@ class DetectionTracker:
             )
 
         sample_idx = 0
+        saw_frame = False
         debug_frames_left = 3
-        for result in stream:
-            if should_stop_cb is not None:
-                try:
-                    if should_stop_cb():
-                        if progress_cb:
-                            progress_cb("[stop] interruption requested")
-                        break
-                except Exception:
-                    logger.debug("Suppressed error", exc_info=True)
-            src_frame_id = sample_idx * vid_stride
-            if progress_cb and sample_idx % 100 == 0:
-                progress_cb(f"[progress] frame {src_frame_id}")
-            timestamp_ms = int(src_frame_id * frame_duration_ms) if frame_duration_ms else None
-            boxes = result.boxes
-            if boxes is None or boxes.id is None:
-                sample_idx += 1
-                continue
+        try:
+            for result in stream:
+                saw_frame = True
+                if should_stop_cb is not None:
+                    try:
+                        if should_stop_cb():
+                            if progress_cb:
+                                progress_cb("[stop] interruption requested")
+                            break
+                    except Exception:
+                        logger.debug("Suppressed error", exc_info=True)
+                src_frame_id = sample_idx * vid_stride
+                if progress_cb and sample_idx % 100 == 0:
+                    progress_cb(f"[progress] frame {src_frame_id}")
+                timestamp_ms = int(src_frame_id * frame_duration_ms) if frame_duration_ms else None
+                seen_in_frame = set()
+                boxes = result.boxes
+                if boxes is not None and boxes.id is not None:
+                    # 원본 프레임 크기(좌표계 기준)
+                    orig_h = orig_w = None
+                    try:
+                        if getattr(result, "orig_img", None) is not None:
+                            orig_h, orig_w = result.orig_img.shape[:2]
+                        elif getattr(result, "orig_shape", None) is not None:
+                            orig_h, orig_w = result.orig_shape[:2]
+                    except Exception:
+                        orig_h = orig_w = None
 
-            seen_in_frame = set()
-            # 원본 프레임 크기(좌표계 기준)
-            orig_h = orig_w = None
-            try:
-                if getattr(result, "orig_img", None) is not None:
-                    orig_h, orig_w = result.orig_img.shape[:2]
-                elif getattr(result, "orig_shape", None) is not None:
-                    orig_h, orig_w = result.orig_shape[:2]
-            except Exception:
-                orig_h = orig_w = None
-
-            xyxy = None
-            if orig_w and orig_h:
-                try:
-                    # xyxyn: [0..1] 정규화 좌표 (원본 프레임 기준). => 픽셀 좌표로 복원해서 사용.
-                    xyxyn = boxes.xyxyn.cpu().numpy()
-                    xyxy = xyxyn.copy()
-                    xyxy[:, [0, 2]] *= float(orig_w)
-                    xyxy[:, [1, 3]] *= float(orig_h)
-                except Exception:
                     xyxy = None
-            if xyxy is None:
-                xyxy = boxes.xyxy.cpu().numpy()
+                    if orig_w and orig_h:
+                        try:
+                            # xyxyn: [0..1] 정규화 좌표 (원본 프레임 기준). => 픽셀 좌표로 복원해서 사용.
+                            xyxyn = boxes.xyxyn.cpu().numpy()
+                            xyxy = xyxyn.copy()
+                            xyxy[:, [0, 2]] *= float(orig_w)
+                            xyxy[:, [1, 3]] *= float(orig_h)
+                        except Exception:
+                            xyxy = None
+                    if xyxy is None:
+                        xyxy = boxes.xyxy.cpu().numpy()
 
-            track_ids = boxes.id.cpu().numpy().astype(int)
-            classes = boxes.cls.cpu().numpy().astype(int) if boxes.cls is not None else np.full_like(track_ids, -1)
-            confs = boxes.conf.cpu().numpy() if boxes.conf is not None else np.zeros_like(track_ids, dtype=float)
+                    track_ids = boxes.id.cpu().numpy().astype(int)
+                    classes = boxes.cls.cpu().numpy().astype(int) if boxes.cls is not None else np.full_like(track_ids, -1)
+                    confs = boxes.conf.cpu().numpy() if boxes.conf is not None else np.zeros_like(track_ids, dtype=float)
 
-            if progress_cb and debug_frames_left > 0 and orig_w and orig_h:
+                    if progress_cb and debug_frames_left > 0 and orig_w and orig_h:
+                        try:
+                            xmax = float(np.max(xyxy[:, 2])) if len(xyxy) else 0.0
+                            ymax = float(np.max(xyxy[:, 3])) if len(xyxy) else 0.0
+                            progress_cb(
+                                f"[debug] orig={orig_w}x{orig_h} boxes_max=({xmax:.1f},{ymax:.1f}) imgsz={imgsz} rect={self.yolo_rect} source={Path(source_path).name}"
+                            )
+                        except Exception:
+                            progress_cb(f"[debug] orig={orig_w}x{orig_h} imgsz={imgsz} rect={self.yolo_rect} source={Path(source_path).name}")
+                        debug_frames_left -= 1
+
+                    for idx, track_id in enumerate(track_ids):
+                        x1, y1, x2, y2 = xyxy[idx].tolist()
+                        center_x = (x1 + x2) / 2.0
+                        center_y = (y1 + y2) / 2.0
+
+                        if not point_in_roi((center_x, center_y), self.roi):
+                            continue
+
+                        cls_id = int(classes[idx]) if idx < len(classes) else -1
+                        class_name = self.model.names.get(cls_id, str(cls_id))
+                        vehicle_type = self.class_mapping.get(class_name, class_name) if self.apply_class_mapping else class_name
+                        conf_val = float(confs[idx]) if idx < len(confs) else 0.0
+
+                        state = active.get(track_id)
+                        status = "ongoing"
+                        if state is None:
+                            state = TrackState(
+                                start_frame=sample_idx,
+                                entry=(center_x, center_y),
+                                last_seen=sample_idx,
+                                last_center=(center_x, center_y),
+                                length=1,
+                            )
+                            active[track_id] = state
+                            status = "start"
+                        else:
+                            state.update((center_x, center_y), sample_idx)
+
+                        direction_hint = None
+                        if state.entry != (center_x, center_y):
+                            dx = center_x - state.entry[0]
+                            dy = center_y - state.entry[1]
+                            direction_hint = math.degrees(math.atan2(dy, dx))
+
+                        # 트랙 단위 저장: 프레임별 포인트는 버퍼에 누적 후, end 시 1row로 저장
+                        traj_buf.setdefault(track_id, []).append([float(src_frame_id), float(timestamp_ms or 0), float(center_x), float(center_y)])
+                        if track_id not in meta_buf:
+                            meta_buf[track_id] = {
+                                "session_id": session,
+                                "camera_id": self.camera_id,
+                                "track_id": str(track_id),
+                                "class_id": cls_id,
+                                "class_name": class_name,
+                                "vehicle_type": vehicle_type,
+                                "start_frame": int(src_frame_id),
+                                "start_ts_ms": int(timestamp_ms or 0),
+                                "entry_x": float(state.entry[0]),
+                                "entry_y": float(state.entry[1]),
+                                "confidence": float(conf_val),
+                            }
+                        _add_class_evidence(meta_buf[track_id], cls_id, class_name, vehicle_type, conf_val)
+                        # 항상 최신 종료 정보 갱신
+                        meta_buf[track_id]["end_frame"] = int(src_frame_id)
+                        meta_buf[track_id]["end_ts_ms"] = int(timestamp_ms or 0)
+                        meta_buf[track_id]["exit_x"] = float(center_x)
+                        meta_buf[track_id]["exit_y"] = float(center_y)
+                        meta_buf[track_id]["track_len"] = int(state.length)
+                        meta_buf[track_id]["direction_hint"] = direction_hint
+                        seen_in_frame.add(track_id)
+
+                # 15분 경계마다 버퍼를 비워 DB에 기록
+                if (
+                    flush_interval_ms is not None
+                    and timestamp_ms is not None
+                    and next_flush_ms is not None
+                    and timestamp_ms >= next_flush_ms
+                ):
+                    self._checkpoint_active(
+                        active,
+                        db_writer,
+                        session,
+                        sample_idx,
+                        frame_duration_ms,
+                        vid_stride,
+                        traj_buf,
+                        meta_buf,
+                    )
+                    db_writer.flush()
+                    if progress_cb:
+                        progress_cb(f"[flush] frame={src_frame_id} ts_ms={timestamp_ms}")
+                    while timestamp_ms >= next_flush_ms:
+                        next_flush_ms += flush_interval_ms
+
+                self._finalize_inactive(active, seen_in_frame, sample_idx, db_writer, session, frame_duration_ms, vid_stride, traj_buf, meta_buf)
+                sample_idx += 1
+
+        finally:
+            # Preserve the original inference error if saving also fails.
+            failed = sys.exc_info()[0] is not None
+            cleanup_error = None
+            for track_id, state in list(active.items()):
                 try:
-                    xmax = float(np.max(xyxy[:, 2])) if len(xyxy) else 0.0
-                    ymax = float(np.max(xyxy[:, 3])) if len(xyxy) else 0.0
-                    progress_cb(
-                        f"[debug] orig={orig_w}x{orig_h} boxes_max=({xmax:.1f},{ymax:.1f}) imgsz={imgsz} rect={self.yolo_rect} source={Path(source_path).name}"
-                    )
-                except Exception:
-                    progress_cb(f"[debug] orig={orig_w}x{orig_h} imgsz={imgsz} rect={self.yolo_rect} source={Path(source_path).name}")
-                debug_frames_left -= 1
-
-            for idx, track_id in enumerate(track_ids):
-                x1, y1, x2, y2 = xyxy[idx].tolist()
-                center_x = (x1 + x2) / 2.0
-                center_y = (y1 + y2) / 2.0
-
-                if not point_in_roi((center_x, center_y), self.roi):
-                    continue
-
-                cls_id = int(classes[idx]) if idx < len(classes) else -1
-                class_name = self.model.names.get(cls_id, str(cls_id))
-                vehicle_type = self.class_mapping.get(class_name, class_name) if self.apply_class_mapping else class_name
-                conf_val = float(confs[idx]) if idx < len(confs) else 0.0
-
-                state = active.get(track_id)
-                status = "ongoing"
-                if state is None:
-                    state = TrackState(
-                        start_frame=sample_idx,
-                        entry=(center_x, center_y),
-                        last_seen=sample_idx,
-                        last_center=(center_x, center_y),
-                        length=1,
-                    )
-                    active[track_id] = state
-                    status = "start"
-                else:
-                    state.update((center_x, center_y), sample_idx)
-
-                direction_hint = None
-                if state.entry != (center_x, center_y):
-                    dx = center_x - state.entry[0]
-                    dy = center_y - state.entry[1]
-                    direction_hint = math.degrees(math.atan2(dy, dx))
-
-                # 트랙 단위 저장: 프레임별 포인트는 버퍼에 누적 후, end 시 1row로 저장
-                traj_buf.setdefault(track_id, []).append([float(src_frame_id), float(timestamp_ms or 0), float(center_x), float(center_y)])
-                if track_id not in meta_buf:
-                    meta_buf[track_id] = {
-                        "session_id": session,
-                        "camera_id": self.camera_id,
-                        "track_id": str(track_id),
-                        "class_id": cls_id,
-                        "class_name": class_name,
-                        "vehicle_type": vehicle_type,
-                        "start_frame": int(src_frame_id),
-                        "start_ts_ms": int(timestamp_ms or 0),
-                        "entry_x": float(state.entry[0]),
-                        "entry_y": float(state.entry[1]),
-                        "confidence": float(conf_val),
-                    }
-                _add_class_evidence(meta_buf[track_id], cls_id, class_name, vehicle_type, conf_val)
-                # 항상 최신 종료 정보 갱신
-                meta_buf[track_id]["end_frame"] = int(src_frame_id)
-                meta_buf[track_id]["end_ts_ms"] = int(timestamp_ms or 0)
-                meta_buf[track_id]["exit_x"] = float(center_x)
-                meta_buf[track_id]["exit_y"] = float(center_y)
-                meta_buf[track_id]["track_len"] = int(state.length)
-                meta_buf[track_id]["direction_hint"] = direction_hint
-                seen_in_frame.add(track_id)
-
-            # 15분 경계마다 버퍼를 비워 DB에 기록
-            if (
-                flush_interval_ms is not None
-                and timestamp_ms is not None
-                and next_flush_ms is not None
-                and timestamp_ms >= next_flush_ms
-            ):
-                self._checkpoint_active(
-                    active,
-                    db_writer,
-                    session,
-                    sample_idx,
-                    frame_duration_ms,
-                    vid_stride,
-                    traj_buf,
-                    meta_buf,
-                )
-                db_writer.flush()
-                if progress_cb:
-                    progress_cb(f"[flush] frame={src_frame_id} ts_ms={timestamp_ms}")
-                while timestamp_ms >= next_flush_ms:
-                    next_flush_ms += flush_interval_ms
-
-            self._finalize_inactive(active, seen_in_frame, sample_idx, db_writer, session, frame_duration_ms, vid_stride, traj_buf, meta_buf)
-            sample_idx += 1
-
-        # finalize remaining tracks as ended
-        for track_id, state in list(active.items()):
-            self._write_end_record(track_id, state, sample_idx, db_writer, session, frame_duration_ms, vid_stride, traj_buf, meta_buf)
-            active.pop(track_id, None)
+                    self._write_end_record(track_id, state, sample_idx, db_writer, session,
+                                           frame_duration_ms, vid_stride, traj_buf, meta_buf)
+                    active.pop(track_id, None)
+                except Exception as exc:
+                    logger.error("Failed to save active track %s during cleanup", track_id, exc_info=True)
+                    cleanup_error = cleanup_error or exc
+            try:
+                close_stream = getattr(stream, "close", None)
+                if close_stream is not None:
+                    close_stream()
+            except Exception as exc:
+                logger.error("Failed to close detection stream", exc_info=True)
+                cleanup_error = cleanup_error or exc
+            try:
+                dataset = getattr(getattr(self.model, "predictor", None), "dataset", None)
+                cap = getattr(dataset, "cap", None)
+                if cap is not None:
+                    cap.release()
+            except Exception as exc:
+                logger.error("Failed to release video capture", exc_info=True)
+                cleanup_error = cleanup_error or exc
+            if cleanup_error is not None and not failed:
+                raise cleanup_error
+        if not saw_frame:
+            raise RuntimeError(f"No video frames could be decoded: {video_path}")
         if progress_cb:
             progress_cb(f"[done] total sampled frames: {sample_idx} (vid_stride={vid_stride})")
 

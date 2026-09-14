@@ -6,10 +6,12 @@ GUI와 Colab/CLI는 서로 다른 탐지 코드를 사용하지 않습니다. �
 
 ## 빠른 시작
 
+신규 Windows 환경은 검증에 사용한 Python 3.10 계열로 만듭니다. `constraints-windows-py310.txt`는 현재 로컬 주요 패키지 버전 기록이며 전체 전이 의존성·GPU 휠을 고정하는 lock 파일은 아닙니다. 기존 `C:\envs\countcar5.0` 환경은 v5와 공유하므로 임의로 재설치·업그레이드하지 마세요. Colab에는 Windows constraints를 적용하지 않습니다.
+
 ```powershell
-python -m venv .venv
+py -3.10 -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+python -m pip install -r requirements.txt -c constraints-windows-py310.txt
 python -m src.app
 ```
 
@@ -27,7 +29,7 @@ GUI, CLI, Colab, 분석라인 설정, 카운팅 및 문제 해결 방법은 [사
 - `src/services/colab_export.py`: 현재 GUI 설정을 Colab 설정·실행 셀로 생성
 - `src/config/model_profiles.py`: 모델별 차종 프로파일 (`config/model_profiles.json`)
 - `src/pipeline/`: 탐지, 추적, 병합, 가상 이벤트, 카운팅
-- `src/db/`: SQLite 스키마와 저장기
+- `src/db/`: SQLite 스키마·저장기와 구형/신형 공통 궤적 조회 (`trajectories.py`)
 - `src/ui/`: PySide6 GUI
 - `config/`: 공용 기본 설정
 - `config/lines/`: 현장별 분석라인

@@ -64,7 +64,7 @@ def main() -> None:
     parser.add_argument(
         "--overwrite-session",
         action="store_true",
-        help="Delete all data derived from the same session before writing new tracks.",
+        help="Replace the session only after successful detection; preserve original data on failure or cancellation.",
     )
     parser.add_argument(
         "--flush-minutes",

@@ -2,6 +2,9 @@ import logging
 import json
 import math
 import sqlite3
+from contextlib import closing
+
+from src.db.trajectories import iter_trajectories, trajectory_slots
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -913,31 +916,15 @@ class _TrajectoryLoadWorker(QObject):
                 init_db(self.db_path)
             except Exception:
                 logger.debug("Suppressed error", exc_info=True)
-            with sqlite3.connect(self.db_path) as conn:
-                has_track_trajs = conn.execute(
-                    "select 1 from sqlite_master where type='table' and name='track_trajs' limit 1"
-                ).fetchone() is not None
-                if not has_track_trajs:
-                    self.finished.emit({"token": self.token, "track_count": 0})
-                    return
-                query = (
-                    "select track_id, coalesce(vehicle_type, class_name) as cls_name, traj "
-                    "from track_trajs where traj is not null"
-                )
-                params: List[object] = []
-                if self.session_id:
-                    query += " and session_id = ?"
-                    params.append(self.session_id)
-                if self.slot_index is not None:
-                    query += " and (start_ts_ms / ?) = ?"
-                    params.extend([int(self._slot_interval_ms), int(self.slot_index)])
-                query += " order by track_id"
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 tracks_batch = []
                 track_count = 0
-                for tid, cls_name, blob in conn.execute(query, tuple(params)):
+                for _sess, _cam, tid, cls_name, pts_raw in iter_trajectories(
+                    conn, self.session_id, slot_index=self.slot_index,
+                    slot_interval_ms=self._slot_interval_ms,
+                ):
                     if self._interrupted():
                         return
-                    pts_raw = decode_traj(blob) if blob is not None else []
                     full_pts: List[Tuple[float, float]] = []
                     pts: List[Tuple[float, float]] = []
                     for row in pts_raw:
@@ -1951,15 +1938,8 @@ class TrajectoryViewer2Window(QMainWindow):
         slots: List[int] = []
         if db_path.exists():
             try:
-                with sqlite3.connect(db_path) as conn:
-                    sql = "select distinct (start_ts_ms / 900000) as slot from track_trajs where start_ts_ms is not null"
-                    params: List[object] = []
-                    if session_id:
-                        sql += " and session_id = ?"
-                        params.append(session_id)
-                    sql += " order by slot"
-                    rows = conn.execute(sql, tuple(params)).fetchall()
-                    slots = [int(r[0]) for r in rows if r and r[0] is not None]
+                with closing(sqlite3.connect(db_path)) as conn:
+                    slots = trajectory_slots(conn, session_id)
             except Exception:
                 slots = []
         self.slot_combo.blockSignals(True)

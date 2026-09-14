@@ -1,0 +1,12 @@
+# Observed Windows / Python 3.10.8 environment, 2026-09-14.
+# Pin major runtime dependencies; not a full transitive lock or CUDA wheel selection.
+# Use only in a NEW local environment, not the shared v5 environment or Colab.
+PySide6==6.10.1
+opencv-python==4.12.0.88
+numpy==2.2.6
+ultralytics==8.3.247
+PyYAML==6.0.3
+pandas==2.3.3
+openpyxl==3.1.5
+torch==2.9.1
+torchvision==0.24.1

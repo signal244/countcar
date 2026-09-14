@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List
 
@@ -29,13 +31,18 @@ def _number_in_range(
     *,
     minimum: float | None = None,
     maximum: float | None = None,
+    integer: bool = False,
 ) -> None:
     if key not in cfg or cfg.get(key) in (None, ""):
         return
     try:
         value = float(cfg[key])
-    except (TypeError, ValueError):
-        report.errors.append(f"{key}는 숫자여야 합니다")
+        if isinstance(cfg[key], bool) or not math.isfinite(value):
+            raise ValueError
+        if integer and (not value.is_integer() or int(cfg[key]) != value):
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        report.errors.append(f"{key}는 유한한 {'정수' if integer else '숫자'}여야 합니다")
         return
     if minimum is not None and value < minimum:
         report.errors.append(f"{key}는 {minimum} 이상이어야 합니다")
@@ -51,19 +58,33 @@ def validate_app_config(cfg: Dict[str, Any]) -> ValidationReport:
 
     _number_in_range(cfg, "confidence_threshold", report, minimum=0.0, maximum=1.0)
     _number_in_range(cfg, "target_fps", report, minimum=0.01)
-    _number_in_range(cfg, "yolo_imgsz", report, minimum=32.0)
-    _number_in_range(cfg, "max_idle_frames", report, minimum=1.0)
-    _number_in_range(cfg, "flush_interval_minutes", report, minimum=0.0)
+    _number_in_range(cfg, "yolo_imgsz", report, minimum=32.0, integer=True)
+    _number_in_range(cfg, "max_idle_frames", report, minimum=1.0, integer=True)
+    _number_in_range(cfg, "flush_interval_minutes", report, minimum=0.0, integer=True)
+
+    for key in ("resize_width", "resize_height"):
+        _number_in_range(cfg, key, report, minimum=1, integer=True)
+    resize_values = [cfg.get(key) not in (None, "") for key in ("resize_width", "resize_height")]
+    if any(resize_values) and not all(resize_values):
+        report.errors.append("resize_width와 resize_height는 함께 지정해야 합니다")
+    roi = cfg.get("roi", [])
+    if roi and (not isinstance(roi, list) or len(roi) < 3 or not all(_valid_point(point) for point in roi)):
+        report.errors.append("roi는 유한한 좌표 세 개 이상의 다각형이어야 합니다")
 
     allowed = cfg.get("allowed_classes")
     if allowed is not None:
         if not isinstance(allowed, list):
             report.errors.append("allowed_classes는 정수 목록이어야 합니다")
         else:
-            try:
-                [int(value) for value in allowed]
-            except (TypeError, ValueError):
-                report.errors.append("allowed_classes에는 정수만 사용할 수 있습니다")
+            for value in allowed:
+                try:
+                    number = float(value)
+                    if (isinstance(value, bool) or not math.isfinite(number)
+                            or number < 0 or not number.is_integer() or int(value) != number):
+                        raise ValueError
+                except (TypeError, ValueError, OverflowError):
+                    report.errors.append("allowed_classes에는 0 이상의 유한한 정수만 사용할 수 있습니다")
+                    break
     return report
 
 
@@ -71,9 +92,9 @@ def _valid_point(point: object) -> bool:
     if not isinstance(point, (list, tuple)) or len(point) < 2:
         return False
     try:
-        float(point[0])
-        float(point[1])
-    except (TypeError, ValueError):
+        if any(isinstance(value, bool) or not math.isfinite(float(value)) for value in point[:2]):
+            return False
+    except (TypeError, ValueError, OverflowError):
         return False
     return True
 
@@ -101,6 +122,8 @@ def validate_line_settings(line_cfg: Dict[str, Any]) -> ValidationReport:
         points = line.get("points")
         if not isinstance(points, list) or len(points) < 2 or not all(_valid_point(point) for point in points):
             report.errors.append(f"라인 {line_id or index}의 points는 두 개 이상의 좌표여야 합니다")
+        if line.get("in_point") is not None and not _valid_point(line["in_point"]):
+            report.errors.append(f"라인 {line_id or index}의 in_point는 유한한 좌표여야 합니다")
         if not str(line.get("bound") or "").strip():
             report.warnings.append(f"라인 {line_id or index}에 bound가 없어 접근로 집계가 제한될 수 있습니다")
 
@@ -112,11 +135,7 @@ def validate_line_settings(line_cfg: Dict[str, Any]) -> ValidationReport:
         if line_cfg.get(key) in (None, ""):
             report.warnings.append(f"{key}가 없어 좌표계 자동 검증이 제한됩니다")
             continue
-        try:
-            if float(line_cfg[key]) <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            report.errors.append(f"{key}는 양수여야 합니다")
+        _number_in_range(line_cfg, key, report, minimum=1, integer=True)
     return report
 
 

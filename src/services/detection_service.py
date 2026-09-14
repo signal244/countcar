@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+import logging
+import uuid
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -14,6 +16,9 @@ from src.config.validation import format_warnings, validate_app_config, validate
 from src.db.schema import init_db
 from src.db.writer import TrackTrajDBWriter
 from src.pipeline.detect_track import DetectionTracker
+
+
+logger = logging.getLogger(__name__)
 
 
 ProgressCallback = Callable[[str], None]
@@ -287,10 +292,10 @@ class DetectionService:
         ).strip() or video_path.stem
         overwrite = bool(request.overwrite_session or cfg.get("overwrite_session", False))
         session_id = session_base
-        with closing(sqlite3.connect(db_path)) as conn, conn:
+        with closing(sqlite3.connect(db_path)) as conn:
             if overwrite:
-                _delete_session(conn, session_id)
-                conn.commit()
+                # Keep the original session and all derived rows until success.
+                session_id = f"{session_base}_partial_{uuid.uuid4().hex}"
             elif _session_exists(conn, session_id):
                 session_id = _make_unique_session_id(conn, session_base)
 
@@ -305,15 +310,45 @@ class DetectionService:
             f"rect={build.info['yolo_rect']} "
             f"class_mapping={build.info['apply_class_mapping']}"
         )
-        with TrackTrajDBWriter(db_path) as writer:
-            build.tracker.run(
-                video_path=video_path,
-                db_writer=writer,
-                session_id=session_id,
-                progress_cb=progress_cb,
-                should_stop_cb=should_stop_cb,
-            )
-        stopped = bool(should_stop_cb and should_stop_cb())
+        stop_requested = False
+
+        def should_stop() -> bool:
+            nonlocal stop_requested
+            if should_stop_cb is not None and not stop_requested:
+                stop_requested = bool(should_stop_cb())
+            return stop_requested
+
+        try:
+            with TrackTrajDBWriter(db_path) as writer:
+                build.tracker.run(
+                    video_path=video_path,
+                    db_writer=writer,
+                    session_id=session_id,
+                    progress_cb=progress_cb,
+                    should_stop_cb=should_stop if should_stop_cb is not None else None,
+                )
+            stopped = should_stop()
+            if overwrite and not stopped:
+                # A short transaction makes delete + promotion atomic. A failed
+                # promotion rolls back the deletion; partial rows remain usable.
+                with closing(sqlite3.connect(db_path)) as conn, conn:
+                    conn.execute("PRAGMA busy_timeout = 30000")
+                    conn.execute("BEGIN IMMEDIATE")
+                    _delete_session(conn, session_base)
+                    conn.execute("UPDATE track_trajs SET session_id=? WHERE session_id=?",
+                                 (session_base, session_id))
+                session_id = session_base
+            elif overwrite:
+                emit(f"[stop] 기존 세션 보존. 부분 결과 session_id={session_id}")
+        except Exception:
+            if overwrite:
+                logger.error("Overwrite failed; original session preserved, partial session=%s", session_id,
+                             exc_info=True)
+                try:
+                    emit(f"[error] 기존 세션 보존. 부분 결과 session_id={session_id}")
+                except Exception:
+                    logger.debug("Failed to report partial session", exc_info=True)
+            raise
         return DetectionResult(
             session_id=session_id,
             db_path=db_path,
