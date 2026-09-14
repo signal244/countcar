@@ -42,6 +42,7 @@ class PipelineWorker(QThread):
             else:
                 self.finished_ok.emit()
         except Exception as exc:  # noqa: BLE001
+            logger.debug("Pipeline worker failed", exc_info=True)
             self.failed.emit(str(exc))
 
 
@@ -71,4 +72,5 @@ class CountWorker(QThread):
                 logger.debug("Suppressed error", exc_info=True)
             self.finished_ok.emit(self._label, f"{out}{count_info}")
         except Exception as exc:  # noqa: BLE001
+            logger.debug("Count worker failed", exc_info=True)
             self.failed.emit(self._label, str(exc))

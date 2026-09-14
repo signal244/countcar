@@ -13,11 +13,13 @@
 로직만 검증한다.
 """
 
+import gc
 import os
 import sqlite3
 import tempfile
 import types
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -49,23 +51,28 @@ def _fake_self():
 )
 class UndoDataLossTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
+        # 되돌리기 메서드는 `with sqlite3.connect(...)` 를 쓰는데, 이 컨텍스트는
+        # 트랜잭션만 관리하고 연결을 닫지 않는다. Windows 에선 연결이 GC 될
+        # 때까지 파일을 붙잡아 임시 디렉터리 정리가 실패하므로, 정리 오류를
+        # 무시하도록 둔다(tearDown 에서 gc 로 최대한 회수).
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.db_path = Path(self._tmp.name) / "test.db"
         init_db(self.db_path)
 
     def tearDown(self) -> None:
+        gc.collect()  # 되돌리기 메서드가 남긴 sqlite 연결을 회수해 파일 잠금 해제
         self._tmp.cleanup()
 
     def _count(self, table: str, where: str = "", params=()) -> int:
         sql = f"select count(*) from {table}"
         if where:
             sql += f" where {where}"
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             return conn.execute(sql, params).fetchone()[0]
 
     def test_undo_merge_spares_pipeline_owned_map(self) -> None:
         """되돌리기는 수동 병합만 지우고 파이프라인 병합 맵은 남겨야 한다."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             # 파이프라인 소유: 절대 지워지면 안 됨
             conn.execute(
                 "insert into track_merge_map"
@@ -100,7 +107,7 @@ class UndoDataLossTests(unittest.TestCase):
 
     def test_undo_extrap_spares_pipeline_virtual_events(self) -> None:
         """되돌리기는 뷰어가 만든 method 의 가상 이벤트만 지워야 한다."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             # 뷰어가 만든 외삽: 되돌리기 대상
             conn.execute(
                 "insert into track_virtual_events"
@@ -135,7 +142,7 @@ class UndoDataLossTests(unittest.TestCase):
 
     def test_undo_extrap_legacy_stack_only_deletes_viewer_method(self) -> None:
         """method 정보가 없는 구버전 스택도 viewer2_ 접두 이벤트만 지워야 한다."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute(
                 "insert into track_virtual_events"
                 "(session_id, track_id, line_id, ts_ms, method) values (?,?,?,?,?)",
