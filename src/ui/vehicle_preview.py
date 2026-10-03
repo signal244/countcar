@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.ui.widgets import fit_to_screen, wrap_in_scroll
+from src.ui.widgets import TOOLTIPS, apply_button_tooltips, fit_to_screen, wrap_in_scroll
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,7 @@ class VehiclePreviewWindow(QWidget):
         self.start_btn = QPushButton("재생")
         self.start_btn.clicked.connect(self._resume)
         self.exit_btn = QPushButton("닫기")
+        self.exit_btn.setObjectName("previewCloseButton")
         self.exit_btn.setStyleSheet("QPushButton { color: #ffcf5b; font-weight: 800; }")
         self.exit_btn.clicked.connect(self.close)
 
@@ -101,6 +102,8 @@ class VehiclePreviewWindow(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(wrap_in_scroll(content))
         self.setLayout(outer)
+        apply_button_tooltips(self, {"previewCloseButton": "차종 미리보기 창을 닫고 열려 있는 영상 파일을 해제합니다."})
+        self.save_checkbox.setToolTip(TOOLTIPS["결과 영상 저장"])
 
     def _init_pipeline(self) -> None:
         try:

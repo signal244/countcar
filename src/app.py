@@ -60,6 +60,7 @@ from src.ui.vehicle_preview import VehiclePreviewWindow
 from src.ui.widgets import (
     StatusBar,
     WorkflowStepper,
+    apply_button_tooltips,
     fit_to_screen,
     section_divider,
     wrap_in_scroll,
@@ -230,6 +231,12 @@ class MainWindow(QMainWindow):
         container = QWidget()
         container.setLayout(main_layout)
         self.setCentralWidget(wrap_in_scroll(container))
+        apply_button_tooltips(self, {
+            "videoBrowseButton": "분석할 원본 영상을 선택합니다. 파일명에 교차로명과 세션명이 있으면 해당 입력란도 자동으로 채웁니다.",
+            "detectDbBrowseButton": "탐지·추적 궤적을 기록할 SQLite DB 파일 경로를 선택합니다.",
+            "countDbBrowseButton": "카운팅할 궤적이 저장된 SQLite DB를 선택합니다. 감지 단계에서 만든 DB를 지정하세요.",
+            "countLinesBrowseButton": "교차 여부와 방향 판정에 사용할 분석라인 JSON을 선택합니다. 분석 영상에 맞는 라인 파일을 사용하세요.",
+        })
 
     def _header(self) -> QWidget:
         self.stepper = WorkflowStepper(
@@ -262,6 +269,7 @@ class MainWindow(QMainWindow):
 
         video_edit = QLineEdit()
         browse_btn = QPushButton("찾기")
+        browse_btn.setObjectName("videoBrowseButton")
         browse_btn.setFixedWidth(60)
 
         def choose() -> None:
@@ -446,6 +454,7 @@ class MainWindow(QMainWindow):
         # DB path for detection/tracking
         self.db_path_input = QLineEdit(self.cfg_defaults.get("db_path", "output/tracks.sqlite"))
         db_path_btn = QPushButton("경로 설정")
+        db_path_btn.setObjectName("detectDbBrowseButton")
         db_path_btn.setFixedWidth(160)
         db_path_btn.clicked.connect(self._choose_detect_db)
         try:
@@ -510,6 +519,7 @@ class MainWindow(QMainWindow):
         # DB / Lines / Output
         self.count_db_input = QLineEdit(self.cfg_defaults.get("count_db_path", "output/tracks.sqlite"))
         db_btn = QPushButton("찾기")
+        db_btn.setObjectName("countDbBrowseButton")
         db_btn.setFixedWidth(90)
         db_btn.clicked.connect(self._choose_count_db)
 
@@ -521,6 +531,7 @@ class MainWindow(QMainWindow):
 
         self.count_lines_input = QLineEdit(self.cfg_defaults.get("count_lines_path", "config/lines.json"))
         lines_btn = QPushButton("찾기")
+        lines_btn.setObjectName("countLinesBrowseButton")
         lines_btn.setFixedWidth(90)
         lines_btn.clicked.connect(self._choose_count_lines)
 
@@ -608,7 +619,7 @@ class MainWindow(QMainWindow):
 
         # ── Row 1: Colab 코드 생성 / 설정 저장 / 차종 미리보기 ──
         colab_btn = QPushButton("📋 Colab 코드 생성")
-        colab_btn.setProperty("btnType", "primary")
+        colab_btn.setProperty("btnType", "secondary")
         colab_btn.clicked.connect(self.on_export_colab)
 
         save_btn = QPushButton("💾 설정 저장")
@@ -630,11 +641,11 @@ class MainWindow(QMainWindow):
         traj_btn.clicked.connect(self.on_show_trajectories)
 
         count_btn = QPushButton("📐 교차로 카운팅")
-        count_btn.setProperty("btnType", "primary")
+        count_btn.setProperty("btnType", "secondary")
         count_btn.clicked.connect(self.on_count)
 
         approach_btn = QPushButton("📐 접근로 카운팅")
-        approach_btn.setProperty("btnType", "primary")
+        approach_btn.setProperty("btnType", "secondary")
         approach_btn.clicked.connect(self.on_count_approach)
 
         row2 = QHBoxLayout()
@@ -1444,6 +1455,7 @@ class MainWindow(QMainWindow):
             copy_btn = QPushButton("다시 복사")
             copy_btn.clicked.connect(lambda: QGuiApplication.clipboard().setText(cell))
             close_btn = QPushButton("닫기")
+            close_btn.setObjectName("colabDialogCloseButton")
             close_btn.clicked.connect(dialog.accept)
             row = QHBoxLayout()
             row.addWidget(copy_btn)
@@ -1451,6 +1463,7 @@ class MainWindow(QMainWindow):
             row.addWidget(close_btn)
             layout.addLayout(row)
             dialog.setLayout(layout)
+            apply_button_tooltips(dialog, {"colabDialogCloseButton": "Colab 실행 셀 안내 창을 닫습니다. 복사한 내용은 클립보드에 남아 있습니다."})
             dialog.exec()
         except Exception as exc:  # noqa: BLE001
             self.log_view.append("[colab] ERROR")

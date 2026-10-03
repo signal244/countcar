@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.ui.widgets import fit_to_screen, wrap_in_scroll
+from src.ui.widgets import TOOLTIPS, apply_button_tooltips, fit_to_screen, wrap_in_scroll
 
 
 
@@ -180,6 +180,7 @@ class LineDrawerWindow(QMainWindow):
 
         layout.addWidget(self.view, stretch=1)
         layout.addWidget(ctrl_wrap)
+        apply_button_tooltips(self)
 
     def _load_frame(self) -> None:
         frame = load_first_frame(self.video_path)
@@ -418,6 +419,7 @@ class LineDrawerWindow(QMainWindow):
             pts = ln.get("points") or []
             label = QLabel(f"{ln.get('id','line')} [{len(pts)}pts]: {ln.get('bound','')}")
             btn = QPushButton("삭제")
+            btn.setToolTip(TOOLTIPS["삭제"])
             btn.setFixedWidth(60)
 
             def make_remover(i: int):

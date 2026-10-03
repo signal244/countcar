@@ -35,6 +35,7 @@ from src.config.model_profiles import (
     suggest_excel_mapping,
 )
 from src.ui.theme import DARK_DIALOG_STYLE
+from src.ui.widgets import apply_button_tooltips
 
 
 class DetectClassDialog(QDialog):
@@ -99,6 +100,9 @@ class DetectClassDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self.setLayout(layout)
+        apply_button_tooltips(self)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setToolTip("선택한 차종 구성을 저장합니다. 이후 감지 작업에 적용되며 기존 DB는 바뀌지 않습니다.")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setToolTip("변경을 저장하지 않고 차종 선택 창을 닫습니다.")
 
     def _set_all(self, checked: bool) -> None:
         for check in self._checks.values():
@@ -214,6 +218,9 @@ class CountClassMappingDialog(QDialog):
         self.setLayout(layout)
 
         self._refresh_column_order()
+        apply_button_tooltips(self)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setToolTip("차종별 Excel 열 매핑과 순서를 저장합니다. 원본 DB 트랙은 변경하지 않습니다.")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setToolTip("변경을 저장하지 않고 집계 차종 설정 창을 닫습니다.")
 
     def _initial_targets(self) -> List[str]:
         """콤보박스에 미리 채워 둘 열 후보."""

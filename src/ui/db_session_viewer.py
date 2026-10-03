@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.ui.widgets import fit_to_screen
+from src.ui.widgets import apply_button_tooltips, fit_to_screen
 
 
 TABLE_CANDIDATES: Sequence[str] = (
@@ -150,6 +150,7 @@ class DbSessionViewerDialog(QDialog):
         root.addLayout(body, stretch=1)
         root.addWidget(self.status_label)
         self.setLayout(root)
+        apply_button_tooltips(self)
 
     def _apply_style(self) -> None:
         self.setStyleSheet(

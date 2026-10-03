@@ -55,7 +55,7 @@ from src.db.schema import init_db
 from src.db.writer import decode_traj
 from src.ui.db_session_viewer import DbSessionViewerDialog
 from src.ui.theme import DARK_DIALOG_STYLE, MAIN_WINDOW_STYLE
-from src.ui.widgets import StatusBar, fit_to_screen, wrap_in_scroll
+from src.ui.widgets import StatusBar, apply_button_tooltips, fit_to_screen, wrap_in_scroll
 from src.pipeline.track_merge import load_effective_track_merge_map, save_manual_track_merge
 
 VIEWER_EXTRAP_OVERSHOOT_PX = 20.0
@@ -1481,6 +1481,7 @@ class TrajectoryViewer2Window(QMainWindow):
         layout.addWidget(self.status_bar_widget)
         container.setLayout(layout)
         self.setCentralWidget(container)
+        apply_button_tooltips(self)
 
     def _wire_signals(self) -> None:
         self.refresh_sessions_btn.clicked.connect(lambda: self._refresh_sessions(select=self.session_combo.currentText() or None))
