@@ -44,6 +44,7 @@ from src.pipeline.image_extractor import (
     extract_frames,
     next_start_index,
 )
+from src.pipeline.track_merge import merge_params_from_config
 from src.services.colab_export import (
     build_colab_cell,
     build_colab_config,
@@ -553,9 +554,9 @@ class MainWindow(QMainWindow):
         self.count_classes_btn = QPushButton("집계 차종 설정")
         self.count_classes_btn.setFixedWidth(150)
         self.count_classes_btn.clicked.connect(self.on_select_count_classes)
-        default_basis = str(self.cfg_defaults.get("count_analysis_basis", "original") or "original").strip().lower()
+        default_basis = str(self.cfg_defaults.get("count_analysis_basis", "postprocess") or "postprocess").strip().lower()
         if default_basis not in ("original", "postprocess"):
-            default_basis = "original"
+            default_basis = "postprocess"
         idx_basis = self.count_analysis_basis_combo.findData(default_basis)
         if idx_basis >= 0:
             self.count_analysis_basis_combo.setCurrentIndex(idx_basis)
@@ -1530,6 +1531,7 @@ class MainWindow(QMainWindow):
             use_virtual_events=use_postprocess,
             class_mapping=overrides_count.get("count_class_mapping") or None,
             class_columns=overrides_count.get("count_class_columns") or None,
+            auto_merge=merge_params_from_config(self.cfg_defaults) if use_postprocess else None,
         )
 
         self._count_worker = CountWorker(kwargs, mode, f"{label}({basis_label})")

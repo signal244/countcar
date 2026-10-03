@@ -26,7 +26,7 @@ from src.db.schema import SCHEMA_VERSION, init_db
 from src.db.trajectories import iter_trajectories, list_trajectory_sessions, trajectory_end_sec
 from src.pipeline.geometry import bound_in_direction as _bound_in_dir
 from src.pipeline.geometry import segment_intersection as _segment_intersection
-from src.pipeline.track_merge import load_effective_track_merge_map
+from src.pipeline.track_merge import load_effective_track_merge_map, merge_params_from_config, run_track_merge
 from src.pipeline.virtual_events import load_virtual_events
 
 EXTRAP_LINE_OVERSHOOT_PX = 20.0
@@ -1140,11 +1140,14 @@ def run_count(
     use_virtual_events: bool = True,
     class_mapping: Optional[Dict[str, str]] = None,
     class_columns: Optional[List[str]] = None,
+    auto_merge: Optional[Dict[str, object]] = None,
 ):
     """차종 매핑을 명시하면 그대로 쓰고, 없으면 기존 자동 판별로 넘어간다.
 
     class_mapping: {DB에 저장된 차종 이름: 엑셀 집계 열 이름}
     class_columns: 엑셀에 출력할 열 순서
+    auto_merge: use_track_merge 일 때 집계 전에 세션별 자동 병합을 다시 계산할 run_track_merge 인자.
+        결과는 track_merge_map_auto 에 저장되며, 뷰어의 수동 병합/병합 제외가 항상 우선한다.
     """
 
     def log(msg: str) -> None:
@@ -1183,6 +1186,12 @@ def run_count(
     multi_parts: List[pd.DataFrame] = []
     final_parts: List[pd.DataFrame] = []
     for selected_session in sessions:
+        if use_track_merge and auto_merge is not None and selected_session:
+            merge_result = run_track_merge(Path(db_path), selected_session, lines_path=Path(lines_path), **auto_merge)
+            log(
+                f"[merge] {selected_session}: 자동 병합 {merge_result['merged_count']}건 "
+                f"(트랙 {merge_result['total_tracks']}개)"
+            )
         part_multi, part_final = count_track_trajs_streaming(
             db_path=Path(db_path),
             lines=lines,
@@ -1454,13 +1463,20 @@ def main():
     ap.add_argument("--session-id", default=None, help="집계할 session_id (생략하면 세션별 계산 후 합산)")
     ap.add_argument(
         "--analysis-basis",
-        default="original",
+        default="postprocess",
         choices=["original", "postprocess"],
         help="original=원본 궤적, postprocess=병합/가상 이벤트 적용",
     )
     ap.add_argument("--out-csv", default=None, help="결과 CSV 저장 경로")
     ap.add_argument("--out-xlsx", default=None, help="결과 Excel 저장 경로")
+    ap.add_argument("--config", default="config/app_config.json", help="자동 병합(count_merge_*) 설정을 읽을 app_config")
     args = ap.parse_args()
+
+    postprocess = args.analysis_basis == "postprocess"
+    config_path = Path(args.config)
+    auto_merge = None
+    if postprocess and config_path.is_file():
+        auto_merge = merge_params_from_config(json.loads(config_path.read_text(encoding="utf-8-sig")))
 
     out, _ = run_count(
         db_path=Path(args.db),
@@ -1474,8 +1490,9 @@ def main():
         session_id=args.session_id,
         out_csv=Path(args.out_csv) if args.out_csv else None,
         out_xlsx=Path(args.out_xlsx) if args.out_xlsx else None,
-        use_track_merge=args.analysis_basis == "postprocess",
-        use_virtual_events=args.analysis_basis == "postprocess",
+        use_track_merge=postprocess,
+        use_virtual_events=postprocess,
+        auto_merge=auto_merge,
     )
     print(f"saved: {out}")
 

@@ -75,6 +75,8 @@ def _bridge_distance(parent: TrackSummary, child: TrackSummary, gap: float) -> D
             "tail_pred_dist": raw_dist,
             "head_pred_dist": raw_dist,
             "bridge_pred_dist": raw_dist,
+            "tail_lane_dist": raw_dist,
+            "head_lane_dist": raw_dist,
         }
 
     tail_pred_dist = float("inf")
@@ -437,6 +439,17 @@ def _score_candidate(parent: TrackSummary, child: TrackSummary, cfg: Dict[str, o
     dist = float(dist_meta["dist"])
     if dist > max_dist:
         return None
+
+    # 차선 거리(_bridge_distance)는 진행방향 오차를 크게 할인해서, 바로 뒤따르던 다른 차가
+    # 후보로 통과한다. 자식 시작점이 부모 끝점보다 진행방향 뒤쪽이면 같은 차일 수 없다.
+    max_backward = float(cfg.get("max_backward_px") or 0.0)
+    tail_vec = parent.get("tail_vec")
+    if max_backward > 0.0 and tail_vec is not None:
+        px, py = parent["end_xy"]  # type: ignore[misc]
+        cx, cy = child["start_xy"]  # type: ignore[misc]
+        along = (float(cx) - float(px)) * float(tail_vec[0]) + (float(cy) - float(py)) * float(tail_vec[1])
+        if along < -max_backward:
+            return None
 
     parent_cls = str(parent.get("cls_name") or "")
     child_cls = str(child.get("cls_name") or "")
@@ -842,6 +855,20 @@ def load_effective_track_merge_map(db_path: Path, session_id: Optional[str]) -> 
     return flattened
 
 
+def _crossed_lines_by_track(db_path: Path, session_id: str, lines_path: Path) -> Dict[str, frozenset]:
+    # count_tracks 가 이 모듈을 import 하므로 순환을 피해 함수 안에서 가져온다.
+    from src.db.trajectories import iter_trajectories
+    from src.pipeline.count_tracks import _cross_events_from_pts, _normalize_lines, load_lines_with_scale
+
+    norm = _normalize_lines(load_lines_with_scale(Path(lines_path))[0])
+    out: Dict[str, frozenset] = {}
+    with closing(sqlite3.connect(db_path)) as conn:
+        for _sess, _cam, tid, _cls, pts in iter_trajectories(conn, session_id):
+            pts = sorted(pts, key=lambda p: p[1])
+            out[str(tid)] = frozenset(line for _ts, line in _cross_events_from_pts(pts, norm))
+    return out
+
+
 def run_track_merge(
     db_path: Path,
     session_id: str,
@@ -864,9 +891,15 @@ def run_track_merge(
     use_roi_speed_cap: bool = True,
     roi_speed_top_percent: float = 0.10,
     roi_speed_cap_multiplier: float = 1.5,
+    max_backward_px: float = 50.0,
+    broken_only: bool = False,
 ) -> Dict[str, object]:
+    """broken_only: 라인을 2개 이상 통과한(이미 집계되는) 궤적은 병합하지 않고, 이으면 같은 라인을
+    다시 지나게 되는 조합도 막는다. 집계에 도움이 되는 끊긴 궤적끼리의 연결만 남는다. lines_path 필요."""
     init_db(db_path)
     cfg = {
+        "broken_only": bool(broken_only),
+        "max_backward_px": float(max_backward_px),
         "max_gap_sec": float(max_gap_sec),
         "max_dist_px": float(max_dist_px),
         "min_direction_cos": float(min_direction_cos),
@@ -901,6 +934,7 @@ def run_track_merge(
     )
     tracks = sorted(tracks, key=lambda x: (float(x.get("start_ts", 0.0)), str(x.get("track_id") or "")))
     total_tracks = len(tracks)
+    crossed = _crossed_lines_by_track(db_path, session_id, lines_path) if broken_only and lines_path else None
 
     roots: List[TrackSummary] = []
     active_roots: List[TrackSummary] = []
@@ -917,8 +951,16 @@ def run_track_merge(
         best_parent: Optional[TrackSummary] = None
         best_meta: Optional[Dict[str, float]] = None
 
+        if crossed is not None:
+            track["crossed"] = set(crossed.get(str(track["track_id"]), ()))
+            should_try_merge = should_try_merge and len(track["crossed"]) < 2
+
         if should_try_merge:
             for root in active_roots:
+                if crossed is not None:
+                    root_crossed = root["crossed"]  # type: ignore[index]
+                    if len(root_crossed) >= 2 or (root_crossed & track["crossed"]):  # type: ignore[operator]
+                        continue
                 meta = _score_candidate(root, track, cfg)
                 if meta is None:
                     continue
@@ -944,6 +986,8 @@ def run_track_merge(
                 "class_match": int(best_meta["class_match"]),
             }
         )
+        if crossed is not None:
+            best_parent["crossed"] = best_parent["crossed"] | track["crossed"]  # type: ignore[operator]
 
         if float(track["end_ts"]) >= float(best_parent["end_ts"]):
             best_parent["end_ts"] = track["end_ts"]
@@ -1001,6 +1045,33 @@ def run_track_merge(
         "params": cfg,
         "roi_speed_stats": cfg.get("roi_speed_stats") or {},
     }
+
+
+_CONFIG_MERGE_PARAMS = (
+    "max_gap_sec",
+    "max_dist_px",
+    "min_direction_cos",
+    "score_threshold",
+    "require_class_match",
+    "only_short_tracks",
+    "short_track_max_len",
+    "use_gate_condition",
+    "gate_match_dist_px",
+    "use_roi_condition",
+    "require_roi_boundary_cross",
+    "use_roi_speed_cap",
+    "roi_speed_top_percent",
+    "roi_speed_cap_multiplier",
+    "max_backward_px",
+    "broken_only",
+)
+
+
+def merge_params_from_config(cfg: Dict[str, object]) -> Optional[Dict[str, object]]:
+    """app_config 의 count_merge_* 값을 run_track_merge 인자로 변환. 꺼져 있으면 None."""
+    if not cfg.get("count_merge_enabled"):
+        return None
+    return {name: cfg[f"count_merge_{name}"] for name in _CONFIG_MERGE_PARAMS if f"count_merge_{name}" in cfg}
 
 
 def get_track_merge_status(db_path: Path, session_id: str) -> Optional[Dict[str, object]]:
