@@ -9,12 +9,12 @@
 - `rg --files`, `rg -n`으로 범위를 좁힌다. 모델, 영상, 결과 DB, Excel, 노트북 출력은 필요할 때만 확인한다.
 
 ## 실행·검증
-현재 PC의 기존 환경은 `C:\envs\countcar5.0` (Python 3.10.8)이다. 시스템 `python` 대신 명시적 경로를 쓴다. 다른 PC에서는 사용 가능한 호환 환경부터 확인한다.
+현재 VS Code PC의 환경은 `D:\envs\count_car_ver6.0` (Python 3.10.11)이다. Google Drive 프로젝트 안에 가상환경을 만들지 않는다. 프로젝트 `.vscode/settings.json`이 로컬 인터프리터를 가리키며 새 통합 터미널에서 자동 활성화한다. 실행과 테스트에는 명시적 Python 경로를 쓴다. 새 PC 설치 절차는 `사용설명서.md` 3절을 따른다.
 
 ```powershell
-& 'C:\envs\countcar5.0\Scripts\python.exe' -m src.app
+& 'D:\envs\count_car_ver6.0\Scripts\python.exe' -m src.app
 $env:QT_QPA_PLATFORM = 'offscreen'
-& 'C:\envs\countcar5.0\Scripts\python.exe' -m unittest discover -s tests -t . -v
+& 'D:\envs\count_car_ver6.0\Scripts\python.exe' -m unittest discover -s tests -t . -v
 ```
 
 - v5와 공유하는 환경이므로 패키지를 임의 업그레이드하지 않는다. 테스트는 `unittest`를 사용한다.

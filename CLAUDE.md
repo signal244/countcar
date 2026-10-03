@@ -9,16 +9,13 @@ GUI 쪽에만 반영하는 실수를 하지 말 것.
 
 ## 실행 환경
 
-가상환경은 프로젝트 밖에 있다. **`python` 을 그냥 쓰면 안 된다** —
-시스템 기본이 Python 3.14 인데 ultralytics/PySide6 가 지원하지 않는다.
+이 PC의 가상환경은 Google Drive 프로젝트 폴더 밖인 `D:\envs\count_car_ver6.0`에 있다. Python 3.10.11을 사용하며 VS Code workspace 설정이 인터프리터를 지정한다. 새 통합 터미널은 선택된 환경을 자동 활성화한다. 이미 열린 터미널은 이전 환경을 유지할 수 있다.
 
 ```powershell
-C:\envs\countcar5.0\Scripts\Activate.ps1     # Python 3.10.8
-python -m src.app
+& 'D:\envs\count_car_ver6.0\Scripts\python.exe' -m src.app
 ```
 
-- 이 환경은 v5.0 과 **공유**한다. 패키지를 올리면 v5.0 이 깨질 수 있다.
-- torch 는 **CPU 빌드**다. 무거운 연산은 `colab/` 노트북에서 돌리는 것이 설계 의도.
+의존성은 `requirements.txt`와 `constraints-windows-py310.txt`로 설치한다. 이 D: 환경은 v5.0 공유 환경과 분리되어 있다. `torch`는 CPU 빌드이며 무거운 연산은 `colab/` 노트북에서 실행한다. 새 PC 설치 절차는 `사용설명서.md`의 3절을 따른다.
 
 ### 테스트
 
