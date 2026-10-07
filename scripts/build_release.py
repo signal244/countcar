@@ -47,7 +47,8 @@ def version_text() -> str:
     def git(*args: str) -> str:
         return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8").stdout.strip()
 
-    dirty = "있음(커밋 전 변경 포함)" if git("status", "--porcelain", "--untracked-files=no") else "없음"
+    # status 는 줄바꿈만 다른(구글드라이브 동기화) 파일도 수정으로 보여 numstat 으로 실제 차이만 본다.
+    dirty = "있음(커밋 전 변경 포함)" if git("diff", "HEAD", "--numstat") else "없음"
     return (
         f"Count Car 배포판\n만든 날짜: {datetime.now():%Y-%m-%d %H:%M}\n"
         f"기준 커밋: {git('log', '-1', '--format=%h %s')}\n커밋 이후 변경: {dirty}\n"
