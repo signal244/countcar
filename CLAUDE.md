@@ -101,6 +101,13 @@ self.setCentralWidget(wrap_in_scroll(central))
 `except Exception` 으로 삼킬 때는 `logger.debug(..., exc_info=True)` 를
 남기는 것이 이 코드베이스의 관례다.
 
+## 실행 모드
+
+GUI·CLI 는 `.pt` 만 고르고, `src/config/runtime.py` 의 `plan_runtime` 이 GPU 유무로
+실행 방식을 정한다(GPU: `.pt` / CPU: 같은 폴더 `<이름>_int8_openvino_model`). 변환 모델은
+`scripts/export_openvino.py` 로 만든다. Colab 내보내기는 항상 `runtime_mode: gpu` + `.pt`.
+변환 모델은 `model: auto` ReID 를 못 쓰므로 `effective_tracker` 가 `cpu_tracker_config` 로 바꾼다.
+
 ## 주요 경로
 
 - `src/services/detection_service.py` — GUI·CLI·Colab 공통 탐지 서비스

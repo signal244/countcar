@@ -9,9 +9,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Mapping, Optional
 
-from src.config.device import resolve_device
 from src.config.loader import load_app_config, load_json, load_line_settings
 from src.config.model_resolver import can_auto_download_model, ensure_model_source, resolve_model_source
+from src.config.runtime import effective_tracker, plan_runtime, training_imgsz
 from src.config.validation import format_warnings, validate_app_config, validate_line_settings
 from src.db.schema import init_db
 from src.db.writer import TrackTrajDBWriter
@@ -117,8 +117,23 @@ def build_tracker(
     resize = None
     if cfg.get("resize_width") and cfg.get("resize_height"):
         resize = (int(cfg["resize_width"]), int(cfg["resize_height"]))
-    yolo_imgsz = int(cfg.get("yolo_imgsz") or (resize[0] if resize else 640))
     yolo_rect = bool(cfg.get("yolo_rect", True))
+
+    raw_model = str(cfg.get("model_path") or "").strip()
+    model_value: str | Path = resolve_project_path(raw_model, cfg_path) if raw_model else raw_model
+    model_source, _ = resolve_model_source(model_value)
+    if not model_source:
+        raise FileNotFoundError("Model path is empty")
+    model_source = ensure_model_source(model_value)
+    plan = plan_runtime(model_source, str(cfg.get("runtime_mode") or "auto"), str(cfg.get("device") or "auto"))
+
+    imgsz_value = str(cfg.get("yolo_imgsz") or "").strip().lower()
+    if plan.fixed_imgsz:
+        yolo_imgsz = plan.fixed_imgsz
+    elif imgsz_value == "auto":
+        yolo_imgsz = training_imgsz(plan.model_path) or 1280
+    else:
+        yolo_imgsz = int(cfg.get("yolo_imgsz") or (resize[0] if resize else 640))
 
     if roi:
         iw = float(line_cfg.get("image_width") or 0.0)
@@ -138,16 +153,14 @@ def build_tracker(
                 sy = ih / base_h
                 roi = [[float(point[0]) * sx, float(point[1]) * sy] for point in roi]
 
-    device = resolve_device(cfg.get("device"))
-    raw_model = str(cfg.get("model_path") or "").strip()
-    model_value: str | Path = resolve_project_path(raw_model, cfg_path) if raw_model else raw_model
-    model_source, _ = resolve_model_source(model_value)
-    if not model_source:
-        raise FileNotFoundError("Model path is empty")
-    model_source = ensure_model_source(model_value)
+    device = plan.device
+    model_source = plan.model_path
 
     tracker_value = cfg.get("tracker_config")
     tracker_path = resolve_project_path(str(tracker_value), cfg_path) if tracker_value else None
+    cpu_tracker = cfg.get("cpu_tracker_config")
+    if tracker_path is not None and cpu_tracker:
+        tracker_path = Path(effective_tracker(plan, str(tracker_path), str(resolve_project_path(str(cpu_tracker), cfg_path))))
     allowed_classes = cfg.get("allowed_classes")
     apply_class_mapping = not can_auto_download_model(raw_model)
     tracker = DetectionTracker(
@@ -179,6 +192,9 @@ def build_tracker(
             "yolo_imgsz": yolo_imgsz,
             "yolo_rect": yolo_rect,
             "apply_class_mapping": apply_class_mapping,
+            "runtime": plan.label,
+            "runtime_warning": plan.warning,
+            "tracker_config": str(tracker_path or ""),
         },
     )
 
@@ -300,6 +316,9 @@ class DetectionService:
                 session_id = _make_unique_session_id(conn, session_base)
 
         emit(f"[info] Using device: {build.device}")
+        emit(f"[info] runtime={build.info.get('runtime', '')} tracker={build.info.get('tracker_config', '')}")
+        if build.info.get("runtime_warning"):
+            emit(f"[warn] {build.info['runtime_warning']}")
         emit(f"[info] session_id={session_id}")
         emit(
             f"[info] model(config)={build.info['config_model_path']} "

@@ -1,7 +1,12 @@
 PySide6>=6.6
 opencv-python>=4.8
 numpy>=1.24
-ultralytics>=8.1.0
+ultralytics>=8.4
+# 추적(BoT-SORT) 계산용. 없으면 Ultralytics 가 실행 중에 인터넷으로 설치하려 한다.
+lap>=0.5.12
+# 로컬 CPU 모드: OpenVINO 변환 모델 실행 + 전용 ReID(onnx) 실행
+openvino>=2025.0
+onnxruntime>=1.18
 PyYAML>=6.0
 pandas>=1.5
 openpyxl>=3.1

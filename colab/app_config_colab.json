@@ -4,6 +4,8 @@
   "db_path": "/content/tracks.sqlite",
   "model_path": "models/best.pt",
   "tracker_config": "config/botsort_stable.yaml",
+  "runtime_mode": "gpu",
+  "cpu_tracker_config": "config/botsort_cpu.yaml",
   "yolo_imgsz": 1920,
   "yolo_rect": true,
   "target_fps": 10.0,

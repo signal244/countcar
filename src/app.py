@@ -44,6 +44,7 @@ from src.pipeline.image_extractor import (
     extract_frames,
     next_start_index,
 )
+from src.config.runtime import effective_tracker, plan_runtime
 from src.pipeline.track_merge import merge_params_from_config
 from src.services.colab_export import (
     build_colab_cell,
@@ -74,6 +75,13 @@ logger = logging.getLogger(__name__)
 
 UI_SCALE = 1.35
 
+TRACKER_CONFIGS = {
+    "botsort": "config/botsort_stable.yaml",
+    "botsort_cpu": "config/botsort_cpu.yaml",
+    "botsort_noreid": "config/botsort_noreid.yaml",
+    "bytetrack": "config/bytetrack.yaml",
+}
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -97,6 +105,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._apply_style()
         self._update_detect_classes_label()
+        self._update_runtime_label()
 
     def _resolve_initial_line_settings_path(self) -> Path:
         candidates = [
@@ -413,11 +422,26 @@ class MainWindow(QMainWindow):
 
         # YOLO imgsz (list)
         self.imgsz_combo = QComboBox()
-        for s in ["640", "960", "1280", "1920"]:
+        for s in ["auto", "640", "960", "1280", "1920"]:
             self.imgsz_combo.addItem(s)
-        default_imgsz = int(self.cfg_defaults.get("yolo_imgsz") or self.cfg_defaults.get("resize_width") or 640)
-        default_imgsz = 1280 if default_imgsz not in (640, 960, 1280, 1920) else default_imgsz
-        self.imgsz_combo.setCurrentText(str(default_imgsz))
+        self.imgsz_combo.setToolTip("auto: 모델을 학습한 크기를 따른다. CPU(OpenVINO) 모드에서는 변환할 때 정한 크기를 쓴다.")
+        default_imgsz = str(self.cfg_defaults.get("yolo_imgsz") or self.cfg_defaults.get("resize_width") or 640).strip().lower()
+        if default_imgsz not in ("auto", "640", "960", "1280", "1920"):
+            default_imgsz = "1280"
+        self.imgsz_combo.setCurrentText(default_imgsz)
+
+        self.runtime_combo = QComboBox()
+        for label, value in (("자동", "auto"), ("GPU", "gpu"), ("CPU", "cpu")):
+            self.runtime_combo.addItem(label, value)
+        index = self.runtime_combo.findData(str(self.cfg_defaults.get("runtime_mode", "auto")).lower())
+        self.runtime_combo.setCurrentIndex(max(0, index))
+        self.runtime_combo.setToolTip(
+            "자동: NVIDIA GPU 가 있으면 .pt 를 GPU 로, 없으면 같은 이름의 OpenVINO 변환 모델을 CPU 로 실행.\n"
+            "Colab 코드 생성은 이 선택과 관계없이 항상 .pt + GPU 로 내보낸다."
+        )
+        self.runtime_combo.currentIndexChanged.connect(lambda _i: self._update_runtime_label())
+        self.runtime_label = QLabel("")
+        self.runtime_label.setWordWrap(True)
 
         # Confidence
         self.conf_input = QDoubleSpinBox()
@@ -462,11 +486,18 @@ class MainWindow(QMainWindow):
         except Exception:
             logger.debug("Suppressed error", exc_info=True)
 
-        # Tracker type (botsort / bytetrack)
         self.tracker_combo = QComboBox()
-        self.tracker_combo.addItems(["botsort", "bytetrack"])
-        tracker_cfg = str(self.cfg_defaults.get("tracker_config", "config/botsort_stable.yaml"))
-        self.tracker_combo.setCurrentText("botsort" if "botsort" in tracker_cfg.lower() else "bytetrack")
+        self.tracker_combo.addItems(list(TRACKER_CONFIGS))
+        self.tracker_combo.setToolTip(
+            "botsort: 탐지 모델 특징으로 ReID. CPU(OpenVINO) 모드에서는 자동으로 botsort_cpu 로 바뀐다\n"
+            "botsort_cpu: 전용 ReID 모델 사용 — CPU 에서 많이 느려짐\n"
+            "botsort_noreid: ReID 없이 추적 — CPU 에서 가장 빠름"
+        )
+        tracker_cfg = Path(str(self.cfg_defaults.get("tracker_config", "config/botsort_stable.yaml"))).as_posix()
+        self.tracker_combo.setCurrentText(
+            next((name for name, path in TRACKER_CONFIGS.items() if path == tracker_cfg), "botsort")
+        )
+        self.tracker_combo.currentIndexChanged.connect(lambda _i: self._update_runtime_label())
 
         row = 0
         layout.addWidget(self._cap("FPS"), row, 0)
@@ -494,6 +525,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(model_classes_btn, row, 5)
         layout.addWidget(self._cap("Tracker"), row, 6)
         layout.addWidget(self.tracker_combo, row, 7)
+
+        row += 1
+        layout.addWidget(self._cap("실행 모드"), row, 0)
+        layout.addWidget(self.runtime_combo, row, 1)
+        layout.addWidget(self.runtime_label, row, 2, 1, 6)
 
         row += 1
         layout.addWidget(self._cap("탐지 차종"), row, 0)
@@ -1050,6 +1086,32 @@ class MainWindow(QMainWindow):
                 self.model_combo.set_path(previous)
                 return
         self._update_detect_classes_label()
+        self._update_runtime_label()
+
+    def _update_runtime_label(self) -> None:
+        """선택한 모델과 실행 모드로 이 PC 에서 실제로 어떻게 돌지 보여준다."""
+        if not hasattr(self, "runtime_label") or not hasattr(self, "tracker_combo"):
+            return
+        model_path = self._current_model_path()
+        if not model_path:
+            self.runtime_label.setText("")
+            return
+        try:
+            plan = plan_runtime(
+                model_path,
+                str(self.runtime_combo.currentData() or "auto"),
+                str(self.cfg_defaults.get("device") or "auto"),
+            )
+        except Exception:
+            logger.debug("실행 모드 판단 실패", exc_info=True)
+            self.runtime_label.setText("")
+            return
+        selected = TRACKER_CONFIGS.get(self.tracker_combo.currentText(), TRACKER_CONFIGS["botsort"])
+        tracker = Path(effective_tracker(plan, selected, str(self.cfg_defaults.get("cpu_tracker_config") or ""))).stem
+        text = f"→ {plan.label} · 추적 {tracker}"
+        if plan.warning:
+            text += f"\n⚠ {plan.warning}"
+        self.runtime_label.setText(text)
 
     def _update_detect_classes_label(self) -> None:
         """'탐지 차종' 줄에 현재 선택 상태를 요약해 보여준다."""
@@ -1359,7 +1421,7 @@ class MainWindow(QMainWindow):
     def _build_overrides(self) -> Dict:
         """Collect overrides for detection and tracking."""
         tracker_name = self.tracker_combo.currentText() if hasattr(self, "tracker_combo") else "botsort"
-        tracker_config = "config/botsort_stable.yaml" if tracker_name == "botsort" else "config/bytetrack.yaml"
+        tracker_config = TRACKER_CONFIGS.get(tracker_name, TRACKER_CONFIGS["botsort"])
         junction_name = self.junction_input.text().strip() if hasattr(self, "junction_input") else ""
         session_name = self.session_input.text().strip() if hasattr(self, "session_input") else ""
         return {
@@ -1369,7 +1431,8 @@ class MainWindow(QMainWindow):
             "target_fps": float(self.fps_input.value()),
             "head_seconds": float(self.head_input.value()),
             "tail_seconds": float(self.tail_input.value()),
-            "yolo_imgsz": int(self.imgsz_combo.currentText()),
+            "yolo_imgsz": "auto" if self.imgsz_combo.currentText() == "auto" else int(self.imgsz_combo.currentText()),
+            "runtime_mode": str(self.runtime_combo.currentData() or "auto") if hasattr(self, "runtime_combo") else "auto",
             "yolo_rect": True,
             "confidence_threshold": float(self.conf_input.value()),
             "model_path": self._current_model_path(),

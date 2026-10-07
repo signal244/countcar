@@ -1,0 +1,20 @@
+# 로컬 CPU(OpenVINO) 모드용 BoT-SORT. botsort_stable.yaml 과 ReID 모델만 다르다.
+# 변환(OpenVINO/ONNX)된 탐지 모델은 내부 특징을 꺼낼 수 없어 model: auto 를 쓸 수 없다.
+# 대신 재식별 전용으로 학습된 작은 모델을 쓴다(처음 실행 때 자동 다운로드, onnxruntime 필요).
+tracker_type: botsort
+
+track_high_thresh: 0.35
+track_low_thresh: 0.1
+new_track_thresh: 0.45
+
+track_buffer: 90
+
+match_thresh: 0.8
+fuse_score: true
+
+gmc_method: none
+
+with_reid: True
+proximity_thresh: 0.3
+appearance_thresh: 0.55
+model: models/yolo26n-reid.onnx

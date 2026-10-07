@@ -12,6 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from src.config.runtime import base_model_path
+
 COLAB_DRIVE_ROOT = "/content/drive/MyDrive"
 
 # 구글드라이브가 로컬에 마운트될 때 쓰이는 접두사들
@@ -26,6 +28,7 @@ PATH_CONFIG_KEYS = (
     "model_path",
     "db_path",
     "tracker_config",
+    "cpu_tracker_config",
     "line_settings_path",
     "class_mapping_path",
     "count_db_path",
@@ -97,6 +100,10 @@ def build_colab_config(
     """GUI 설정을 Colab용 설정 dict로 변환한다."""
     exported: Dict[str, object] = dict(cfg)
     exported.pop("root_dir", None)
+    # Colab 은 GPU 로 .pt 를 돌린다. 로컬에서 CPU(OpenVINO) 모드였어도 원본 모델로 되돌린다.
+    exported["runtime_mode"] = "gpu"
+    if exported.get("model_path"):
+        exported["model_path"] = base_model_path(str(exported["model_path"]))
 
     for key in PATH_CONFIG_KEYS:
         if key in exported and exported[key]:

@@ -18,6 +18,10 @@ venv/
 output/
 *.sqlite
 *.pt
+*.onnx
+*_openvino_model/
+# Ultralytics 가 예제 데이터(coco8 등)를 내려받는 곳
+datasets/
 
 # Local GUI/runtime preferences
 config/user_state.json

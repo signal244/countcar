@@ -146,11 +146,18 @@ def file_fingerprint(model_path: str | Path) -> str:
 
 
 def list_model_files(models_dir: str | Path) -> List[Path]:
-    """models 폴더에서 사용 가능한 모델 파일을 이름순으로 나열한다."""
+    """models 폴더의 탐지 모델 파일을 이름순으로 나열한다.
+
+    OpenVINO 변환 폴더와 ReID 전용 모델은 뺀다. 변환 폴더는 같은 이름의 .pt 를 고르면
+    실행 모드(src/config/runtime.py)가 자동으로 찾아 쓴다.
+    """
     directory = Path(models_dir)
     if not directory.is_dir():
         return []
-    found = [e for e in directory.iterdir() if e.is_file() and e.suffix.lower() in MODEL_SUFFIXES]
+    found = [
+        e for e in directory.iterdir()
+        if e.is_file() and e.suffix.lower() in MODEL_SUFFIXES and "-reid" not in e.stem.lower()
+    ]
     return sorted(found, key=lambda p: p.name.lower())
 
 

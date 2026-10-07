@@ -58,7 +58,11 @@ def validate_app_config(cfg: Dict[str, Any]) -> ValidationReport:
 
     _number_in_range(cfg, "confidence_threshold", report, minimum=0.0, maximum=1.0)
     _number_in_range(cfg, "target_fps", report, minimum=0.01)
-    _number_in_range(cfg, "yolo_imgsz", report, minimum=32.0, integer=True)
+    if str(cfg.get("yolo_imgsz", "")).strip().lower() != "auto":
+        _number_in_range(cfg, "yolo_imgsz", report, minimum=32.0, integer=True)
+    mode = str(cfg.get("runtime_mode", "auto") or "auto").strip().lower()
+    if mode not in ("auto", "gpu", "cpu"):
+        report.errors.append("runtime_mode는 auto, gpu, cpu 중 하나여야 합니다")
     _number_in_range(cfg, "max_idle_frames", report, minimum=1.0, integer=True)
     _number_in_range(cfg, "flush_interval_minutes", report, minimum=0.0, integer=True)
 
