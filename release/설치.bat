@@ -9,10 +9,23 @@ set "UV_LINK_MODE=copy"
 set "UV_PYTHON_INSTALL_DIR=%~dp0tools\python"
 set "UV_CACHE_DIR=%~dp0tools\uv-cache"
 set "PY=%~dp0.venv\Scripts\python.exe"
+rem /auto: 설치 프로그램(exe)이 실행할 때. 성공하면 키 입력을 기다리지 않는다(실패 시에는 오류를 읽도록 멈춘다).
+set "AUTO="
+if /i "%~1"=="/auto" set "AUTO=1"
 
 echo ============================================
 echo  Count Car 설치 (인터넷 연결 필요, 10~20분)
 echo ============================================
+
+rem 동기화 폴더에서는 링크(junction)를 만들 수 없어 Python 설치가 실패하고 DB 도 꼬일 수 있다.
+powershell -NoProfile -Command "if ('%~dp0' -match '내 드라이브|My Drive|Google Drive|GoogleDrive|OneDrive') { exit 1 }"
+if %errorlevel%==1 (
+  echo.
+  echo [중단] 지금 위치는 Google Drive 또는 OneDrive 동기화 폴더입니다:
+  echo   %~dp0
+  echo   이 폴더째 C:\CountCar 같은 로컬 폴더로 옮기거나 압축을 다시 푼 뒤, 그곳에서 설치.bat 을 실행하세요.
+  goto :fail
+)
 
 if not exist "%UV%" (
   echo [오류] tools\uv.exe 가 없습니다. 배포판 압축을 다시 풀어 주세요.
@@ -29,10 +42,14 @@ echo [2/4] 가상환경 만들기 (.venv)...
 
 echo.
 echo [3/4] 패키지 설치...
-where nvidia-smi > nul 2> nul
-if %errorlevel%==0 (
+set "HAS_NVIDIA="
+where nvidia-smi > nul 2> nul && set "HAS_NVIDIA=1"
+rem 32비트 프로그램에서 실행되면 System32 가 SysWOW64 로 바뀌어 보여 nvidia-smi 를 못 찾는다.
+if exist "%SystemRoot%\Sysnative\nvidia-smi.exe" set "HAS_NVIDIA=1"
+if defined HAS_NVIDIA (
   echo   NVIDIA GPU 를 찾았습니다. GPU 용 PyTorch 를 설치합니다.
-  "%UV%" pip install --python "%PY%" torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu126 || goto :fail
+  rem +cu126 까지 지정해야 이미 깔린 CPU 용 torch 2.9.1 을 GPU 용으로 바꾼다(번호만 쓰면 같은 버전으로 보고 건너뛴다).
+  "%UV%" pip install --python "%PY%" torch==2.9.1+cu126 torchvision==0.24.1+cu126 --index-url https://download.pytorch.org/whl/cu126 || goto :fail
 ) else (
   echo   NVIDIA GPU 가 없습니다. CPU 용으로 설치합니다.
 )
@@ -46,7 +63,7 @@ echo.
 echo ============================================
 echo  설치 완료. 실행.bat 으로 프로그램을 시작하세요.
 echo ============================================
-pause
+if not defined AUTO pause
 exit /b 0
 
 :fail

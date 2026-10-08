@@ -1,21 +1,23 @@
 """다른 PC 에 설치할 배포판 zip 을 만든다.
 
     python scripts/build_release.py
-    python scripts/build_release.py --models models/yolo26n_v1.pt models/best.pt=yolo8m.pt
+    python scripts/build_release.py --models models/yolo26n_v1.pt models/best.pt=yolo8m_v1.pt
 
 - 프로그램 파일: git 이 관리하는 파일(커밋 전 변경·새 파일 포함, .gitignore 제외)만 담는다.
   개발용 파일(tests, .claude, 개발 문서)은 뺀다.
 - release/ 의 설치·실행 배치파일과 설치_및_사용법.md 를 최상위에, release/sample 을 sample/ 에 둔다.
 - --models 로 고른 .pt 와, 옆에 있는 <이름>_int8_openvino_model 폴더를 함께 넣는다.
-  기본: yolo26n_v1(배포판 기본 모델), yolo11m_v1, 예전 best.pt 는 yolo8m.pt 로 이름을 바꿔 넣는다.
+  기본: yolo26n_v1(배포판 기본 모델), yolo11m_v1, yolo8m_v1(예전 best.pt 와 같은 파일).
 - 샘플 영상, tools/uv.exe(설치 도구)도 넣는다.
 - 결과는 <out-dir>/<날짜>/ 에 zip 과 설치_및_사용법.md, VERSION.txt 를 함께 둔다.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
+import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -27,7 +29,8 @@ EXCLUDE_FILES = {
     ".gitignore", ".gitattributes", ".editorconfig",
 }
 SAMPLE_VIDEO = Path(r"G:\내 드라이브\video\AB테스트\경원교사거리_오후첨두_10-35분.mp4")
-DEFAULT_OUT = Path(r"G:\내 드라이브\vm\count_car_release")
+# Google Drive 는 서명 없는 설치 exe 를 위험 파일로 보고 지운다. 로컬 디스크에 만든다.
+DEFAULT_OUT = Path(r"D:\count_car_release")
 STORED = {".mp4", ".pt", ".onnx", ".bin", ".exe", ".zip"}
 
 
@@ -61,18 +64,19 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument(
         "--models", nargs="*",
-        default=["models/yolo26n_v1.pt", "models/yolo11m_v1.pt", "models/best.pt=yolo8m.pt"],
+        default=["models/yolo26n_v1.pt", "models/yolo11m_v1.pt", "models/yolo8m_v1.pt"],
         help="넣을 .pt 모델. '원본=배포판이름' 으로 이름을 바꿔 넣을 수 있다",
     )
     ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--no-sample-video", action="store_true")
+    ap.add_argument("--no-installer", action="store_true", help="설치 exe(Inno Setup)는 만들지 않음")
     args = ap.parse_args()
 
     entries: list[tuple[Path, str]] = [(ROOT / rel, rel) for rel in program_files()]
 
     release = ROOT / "release"
     for item in release.iterdir():
-        if item.is_file():
+        if item.is_file() and item.suffix != ".iss":
             entries.append((item, item.name))
     for item in (release / "sample").iterdir():
         entries.append((item, f"sample/{item.name}"))
@@ -124,6 +128,48 @@ def main() -> None:
     size = out.stat().st_size / 1e6
     print(f"배포판: {out}  ({len(entries)}개 파일, {size:.0f}MB)")
     print("모델:", ", ".join(sorted({rel for _s, rel in entries if rel.startswith('models/') and rel.count('/') == 1})))
+    if not args.no_installer:
+        build_installer(entries, version, out_dir, now)
+
+
+def _iscc() -> Path | None:
+    found = shutil.which("ISCC")
+    candidates = [Path(found)] if found else []
+    candidates += [
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Inno Setup 6" / "ISCC.exe",
+        Path(os.environ.get("ProgramFiles(x86)", "")) / "Inno Setup 6" / "ISCC.exe",
+        Path(os.environ.get("ProgramFiles", "")) / "Inno Setup 6" / "ISCC.exe",
+    ]
+    return next((c for c in candidates if c.is_file()), None)
+
+
+def build_installer(entries: list[tuple[Path, str]], version: str, out_dir: Path, now: datetime) -> None:
+    """같은 파일로 더블클릭 설치용 exe(Inno Setup)를 만든다."""
+    iscc = _iscc()
+    if iscc is None:
+        print("[건너뜀] Inno Setup(ISCC.exe)이 없어 설치 exe 를 만들지 않았습니다. winget install JRSoftware.InnoSetup")
+        return
+    with tempfile.TemporaryDirectory(prefix="countcar_setup_") as tmp_dir:
+        stage = Path(tmp_dir) / "CountCar"
+        for src, rel in entries:
+            dst = stage / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.suffix.lower() == ".bat":
+                dst.write_bytes(src.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+            else:
+                shutil.copy2(src, dst)
+        (stage / "VERSION.txt").write_text(version, encoding="utf-8")
+        # Inno Setup 은 BOM 이 있어야 UTF-8 로 읽는다(없으면 한글이 깨진다).
+        iss = Path(tmp_dir) / "installer.iss"
+        iss.write_text((ROOT / "release" / "installer.iss").read_text(encoding="utf-8-sig"), encoding="utf-8-sig")
+        name = f"CountCar_Setup_{now:%Y%m%d_%H%M}"
+        subprocess.run(
+            [str(iscc), "/Q", f"/DSrcDir={stage}", f"/DAppVer={now:%Y.%m.%d.%H%M}",
+             f"/DOutDir={out_dir}", f"/DOutName={name}", str(iss)],
+            check=True,
+        )
+    exe = out_dir / f"{name}.exe"
+    print(f"설치 exe: {exe}  ({exe.stat().st_size / 1e6:.0f}MB)")
 
 
 if __name__ == "__main__":
