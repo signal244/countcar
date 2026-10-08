@@ -76,9 +76,9 @@ def validate_app_config(cfg: Dict[str, Any]) -> ValidationReport:
         report.errors.append("roi는 유한한 좌표 세 개 이상의 다각형이어야 합니다")
 
     allowed = cfg.get("allowed_classes")
-    if allowed is not None:
+    if allowed is not None and allowed != "auto":
         if not isinstance(allowed, list):
-            report.errors.append("allowed_classes는 정수 목록이어야 합니다")
+            report.errors.append("allowed_classes는 정수 목록 또는 \"auto\" 여야 합니다")
         else:
             for value in allowed:
                 try:

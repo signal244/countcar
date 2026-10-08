@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Mapping, Optional
 
 from src.config.loader import load_app_config, load_json, load_line_settings
+from src.config.model_profiles import read_model_classes, suggest_detect_class_ids, suggest_excel_mapping
 from src.config.model_resolver import can_auto_download_model, ensure_model_source, resolve_model_source
 from src.config.runtime import effective_tracker, plan_runtime, training_imgsz
 from src.config.validation import format_warnings, validate_app_config, validate_line_settings
@@ -162,6 +163,11 @@ def build_tracker(
     if tracker_path is not None and cpu_tracker:
         tracker_path = Path(effective_tracker(plan, str(tracker_path), str(resolve_project_path(str(cpu_tracker), cfg_path))))
     allowed_classes = cfg.get("allowed_classes")
+    if allowed_classes == "auto":
+        # 모델마다 클래스 번호가 달라(예: best.pt 는 0=person, 새 7종 모델은 0=small_bus)
+        # 고정 번호 목록을 쓰면 차종이 빠진다. 모델의 클래스 이름으로 차량만 고른다.
+        classes = read_model_classes(plan.model_path)
+        allowed_classes = suggest_detect_class_ids(classes, suggest_excel_mapping([classes[c] for c in sorted(classes)])[0]) if classes else None
     apply_class_mapping = not can_auto_download_model(raw_model)
     tracker = DetectionTracker(
         model_path=model_source,

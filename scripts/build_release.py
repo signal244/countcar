@@ -1,12 +1,13 @@
 """다른 PC 에 설치할 배포판 zip 을 만든다.
 
     python scripts/build_release.py
-    python scripts/build_release.py --models models/best.pt models/yolo26n_v1.pt
+    python scripts/build_release.py --models models/yolo26n_v1.pt models/best.pt=yolo8m.pt
 
 - 프로그램 파일: git 이 관리하는 파일(커밋 전 변경·새 파일 포함, .gitignore 제외)만 담는다.
   개발용 파일(tests, .claude, 개발 문서)은 뺀다.
 - release/ 의 설치·실행 배치파일과 설치_및_사용법.md 를 최상위에, release/sample 을 sample/ 에 둔다.
 - --models 로 고른 .pt 와, 옆에 있는 <이름>_int8_openvino_model 폴더를 함께 넣는다.
+  기본: yolo26n_v1(배포판 기본 모델), yolo11m_v1, 예전 best.pt 는 yolo8m.pt 로 이름을 바꿔 넣는다.
 - 샘플 영상, tools/uv.exe(설치 도구)도 넣는다.
 """
 from __future__ import annotations
@@ -57,7 +58,11 @@ def version_text() -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--models", nargs="*", default=["models/best.pt"], help="넣을 .pt 모델")
+    ap.add_argument(
+        "--models", nargs="*",
+        default=["models/yolo26n_v1.pt", "models/yolo11m_v1.pt", "models/best.pt=yolo8m.pt"],
+        help="넣을 .pt 모델. '원본=배포판이름' 으로 이름을 바꿔 넣을 수 있다",
+    )
     ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--no-sample-video", action="store_true")
     args = ap.parse_args()
@@ -76,14 +81,18 @@ def main() -> None:
         entries.append((SAMPLE_VIDEO, f"sample/{SAMPLE_VIDEO.name}"))
 
     for model in [*args.models, "models/yolo26n-reid.onnx"]:
-        pt = (ROOT / model).resolve()
+        source, _, rename = model.partition("=")
+        pt = (ROOT / source).resolve()
         if not pt.is_file():
             raise SystemExit(f"모델이 없습니다: {pt}")
-        entries.append((pt, f"models/{pt.name}"))
+        name = rename or pt.name
+        entries.append((pt, f"models/{name}"))
         for suffix in ("_int8_openvino_model", "_openvino_model"):
             ov = pt.with_name(pt.stem + suffix)
             if ov.is_dir():
-                entries += [(f, f"models/{ov.name}/{f.relative_to(ov).as_posix()}") for f in ov.rglob("*") if f.is_file()]
+                # 이름을 바꿔 넣을 때 변환 폴더도 같은 이름으로 맞춘다(짝 찾기 규칙).
+                ov_name = Path(name).stem + suffix
+                entries += [(f, f"models/{ov_name}/{f.relative_to(ov).as_posix()}") for f in ov.rglob("*") if f.is_file()]
 
     uv = shutil.which("uv")
     if not uv:

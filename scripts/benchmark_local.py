@@ -9,9 +9,15 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import time
+from pathlib import Path
 
 import cv2
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 WARMUP = 5
 
@@ -60,14 +66,19 @@ def main() -> None:
     classes = args.classes
     if classes is None:
         import json
-        from pathlib import Path
 
-        classes = json.loads(Path("config/app_config.json").read_text(encoding="utf-8-sig")).get("allowed_classes")
+        classes = json.loads((ROOT / "config" / "app_config.json").read_text(encoding="utf-8-sig")).get("allowed_classes")
 
     rows = []
     for model_path in args.model:
+        model_classes = classes
+        if classes == "auto":
+            from src.config.model_profiles import read_model_classes, suggest_detect_class_ids, suggest_excel_mapping
+
+            names = read_model_classes(model_path)
+            model_classes = suggest_detect_class_ids(names, suggest_excel_mapping([names[c] for c in sorted(names)])[0])
         common = dict(imgsz=args.imgsz, conf=args.conf, stride=stride, frames=args.frames,
-                      device=args.device, classes=classes)
+                      device=args.device, classes=model_classes)
         rows.append((model_path, "(탐지만)", measure(model_path, args.video, track=False, tracker="", **common)))
         for tracker in args.tracker:
             rows.append((model_path, tracker, measure(model_path, args.video, track=True, tracker=tracker, **common)))

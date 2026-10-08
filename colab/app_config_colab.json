@@ -10,7 +10,7 @@
   "yolo_rect": true,
   "target_fps": 10.0,
   "confidence_threshold": 0.1,
-  "allowed_classes": [1, 2, 3, 4, 5, 6, 7],
+  "allowed_classes": "auto",
   "device": "auto",
   "line_settings_path": "config/lines/line_settings.sample.json",
   "class_mapping_path": "config/category_mapping.json",

@@ -1069,13 +1069,16 @@ class MainWindow(QMainWindow):
         finally:
             QGuiApplication.restoreOverrideCursor()
 
-    def _detect_class_ids(self) -> list:
-        """탐지에 사용할 클래스 번호. 프로파일이 없으면 설정값을 그대로 쓴다."""
+    def _detect_class_ids(self) -> list | str:
+        """탐지에 사용할 클래스 번호. 모델별 차종 설정이 아직 없으면 "auto".
+
+        설정 파일의 고정 번호 목록은 모델마다 클래스 번호가 달라 쓰지 않는다
+        ("auto" 면 탐지 서비스가 모델의 클래스 이름으로 차량만 고른다).
+        """
         profile = self.profile_store.get_cached(self._current_model_path())
         if profile is not None and profile.detect_class_ids:
             return list(profile.detect_class_ids)
-        fallback = self.cfg_defaults.get("allowed_classes")
-        return list(fallback) if isinstance(fallback, list) else []
+        return "auto"
 
     def _on_model_selection_changed(self, _index: int) -> None:
         """콤보박스에서 모델을 바꾸면 프로파일을 읽어 차종 표시를 갱신한다."""
@@ -1462,7 +1465,7 @@ class MainWindow(QMainWindow):
             colab_cfg = build_colab_config(
                 cfg,
                 project_root,
-                allowed_classes=self._detect_class_ids(),
+                allowed_classes=detect_ids if isinstance(detect_ids := self._detect_class_ids(), list) else None,
                 count_class_mapping=mapping or None,
                 count_class_columns=columns or None,
             )

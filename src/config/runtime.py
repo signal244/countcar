@@ -43,14 +43,19 @@ def is_openvino_model(model_path: str | Path) -> bool:
     return Path(str(model_path)).name.rstrip("/\\").endswith("_openvino_model")
 
 
+def _has_openvino_files(folder: Path) -> bool:
+    # 빈 폴더나 변환이 중간에 끊긴 폴더를 변환 모델로 오인하지 않는다.
+    return folder.is_dir() and any(folder.glob("*.xml"))
+
+
 def find_openvino_model(model_path: str | Path) -> Optional[Path]:
     """선택한 모델과 짝이 되는 OpenVINO 변환 모델 폴더. INT8 을 FP32 보다 먼저 찾는다."""
     path = Path(str(model_path))
     if is_openvino_model(path):
-        return path if path.is_dir() else None
+        return path if _has_openvino_files(path) else None
     for suffix in OPENVINO_SUFFIXES:
         candidate = path.with_name(path.stem + suffix)
-        if candidate.is_dir():
+        if _has_openvino_files(candidate):
             return candidate
     return None
 

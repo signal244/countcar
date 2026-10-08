@@ -19,6 +19,7 @@ class ModelListingTests(unittest.TestCase):
         ov = self.root / "best_int8_openvino_model"
         ov.mkdir()
         (ov / "metadata.yaml").write_text("imgsz:\n- 736\n- 1280\n", encoding="utf-8")
+        (ov / "best.xml").write_text("<net/>", encoding="utf-8")
         self.pt = str(self.root / "best.pt")
         self.ov = str(ov)
 
@@ -57,6 +58,12 @@ class ModelListingTests(unittest.TestCase):
         self.assertFalse(plan.openvino)
         self.assertIn("export_openvino", plan.warning)
 
+    def test_empty_converted_folder_is_ignored(self):
+        (self.root / "plain_int8_openvino_model").mkdir()
+        with patch.object(runtime, "_auto_device", return_value="cpu"):
+            plan = runtime.plan_runtime(str(self.root / "plain.pt"), "cpu")
+        self.assertFalse(plan.openvino)
+
     def test_forced_gpu_without_gpu_falls_back_to_cpu_plan(self):
         plan = self.plan("gpu", "cpu")
         self.assertTrue(plan.openvino)
@@ -76,6 +83,28 @@ class ModelListingTests(unittest.TestCase):
         exported = build_colab_config({"model_path": self.ov, "runtime_mode": "cpu"}, self.root)
         self.assertEqual(exported["runtime_mode"], "gpu")
         self.assertTrue(exported["model_path"].endswith("best.pt"))
+
+    def test_auto_detect_classes_follow_model_class_ids(self):
+        from src.config.model_profiles import suggest_detect_class_ids, suggest_excel_mapping
+        from src.config.validation import validate_app_config
+
+        def auto(names):
+            classes = dict(enumerate(names))
+            return suggest_detect_class_ids(classes, suggest_excel_mapping(names)[0])
+
+        new_model = ["small_bus", "passenger_car", "medium_truck", "large_truck", "large_bus", "etc", "small_truck"]
+        old_best = ["person", *new_model]
+        self.assertEqual(auto(new_model), [0, 1, 2, 3, 4, 5, 6])  # 0번 small_bus 가 빠지면 안 된다
+        self.assertEqual(auto(old_best), [1, 2, 3, 4, 5, 6, 7])   # 예전 설정값과 같다
+        self.assertTrue(validate_app_config({"model_path": "m.pt", "db_path": "d", "allowed_classes": "auto"}).ok)
+
+    def test_only_official_weight_names_count_as_downloadable(self):
+        from src.config.model_resolver import can_auto_download_model
+
+        for name in ("yolov8m.pt", "yolo11l.pt", "yolo26n.pt", "yolov5su.pt", "yolo26n-cls.pt"):
+            self.assertTrue(can_auto_download_model(f"models/{name}"), name)
+        for name in ("yolo26n_v1.pt", "yolo11m_v1.pt", "yolo8m.pt", "best.pt", "yolo26n-reid.onnx"):
+            self.assertFalse(can_auto_download_model(f"models/{name}"), name)
 
     def test_export_shape_keeps_training_scale(self):
         self.assertEqual(input_shape(1280, "16:9"), [736, 1280])
