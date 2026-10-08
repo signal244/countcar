@@ -9,6 +9,7 @@
 - --models 로 고른 .pt 와, 옆에 있는 <이름>_int8_openvino_model 폴더를 함께 넣는다.
   기본: yolo26n_v1(배포판 기본 모델), yolo11m_v1, 예전 best.pt 는 yolo8m.pt 로 이름을 바꿔 넣는다.
 - 샘플 영상, tools/uv.exe(설치 도구)도 넣는다.
+- 결과는 <out-dir>/<날짜>/ 에 zip 과 설치_및_사용법.md, VERSION.txt 를 함께 둔다.
 """
 from __future__ import annotations
 
@@ -99,11 +100,17 @@ def main() -> None:
         raise SystemExit("uv.exe 를 찾지 못했습니다. 이 PC 에 uv 를 설치하세요.")
     entries.append((Path(uv), "tools/uv.exe"))
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    out = args.out_dir / f"CountCar_{datetime.now():%Y%m%d_%H%M}.zip"
+    now = datetime.now()
+    out_dir = args.out_dir / f"{now:%Y-%m-%d}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"CountCar_{now:%Y%m%d_%H%M}.zip"
+    version = version_text()
+    # 압축을 풀지 않고도 볼 수 있게 설명서와 버전 정보를 zip 옆에도 둔다.
+    shutil.copy2(release / "설치_및_사용법.md", out_dir / "설치_및_사용법.md")
+    (out_dir / "VERSION.txt").write_text(version + f"배포판 파일: {out.name}\n", encoding="utf-8")
     tmp = out.with_suffix(".zip.tmp")
     with zipfile.ZipFile(tmp, "w") as zf:
-        zf.writestr("CountCar/VERSION.txt", version_text())
+        zf.writestr("CountCar/VERSION.txt", version)
         for src, rel in entries:
             arc = f"CountCar/{rel}"
             if src.suffix.lower() == ".bat":
