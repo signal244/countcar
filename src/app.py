@@ -76,12 +76,16 @@ logger = logging.getLogger(__name__)
 
 UI_SCALE = 1.35
 
+# 화면 표시 이름 -> 추적 설정. 기본은 ReID 끔(2026-10 GPU A/B: 정확도 차이 없이 19% 빠름).
+# ReID 를 켜면 CPU(OpenVINO) 모드에서는 effective_tracker 가 botsort_cpu.yaml(전용 ReID 모델)로 바꾼다.
+DEFAULT_TRACKER = "config/botsort_noreid.yaml"
 TRACKER_CONFIGS = {
-    "botsort": "config/botsort_stable.yaml",
-    "botsort_cpu": "config/botsort_cpu.yaml",
-    "botsort_noreid": "config/botsort_noreid.yaml",
-    "bytetrack": "config/bytetrack.yaml",
+    "BoT-SORT (ReID 끔, 기본)": DEFAULT_TRACKER,
+    "BoT-SORT + ReID (외형 비교)": "config/botsort_stable.yaml",
+    "ByteTrack": "config/bytetrack.yaml",
 }
+TRACKER_LABELS = {path: label for label, path in TRACKER_CONFIGS.items()}
+TRACKER_LABELS["config/botsort_cpu.yaml"] = "BoT-SORT + ReID (CPU 전용 모델)"
 
 
 class MainWindow(QMainWindow):
@@ -503,16 +507,18 @@ class MainWindow(QMainWindow):
             logger.debug("Suppressed error", exc_info=True)
 
         self.tracker_combo = QComboBox()
-        self.tracker_combo.addItems(list(TRACKER_CONFIGS))
+        for label, path in TRACKER_CONFIGS.items():
+            self.tracker_combo.addItem(label, path)
         self.tracker_combo.setToolTip(
-            "botsort: 탐지 모델 특징으로 ReID. CPU(OpenVINO) 모드에서는 자동으로 botsort_cpu 로 바뀐다\n"
-            "botsort_cpu: 전용 ReID 모델 사용 — CPU 에서 많이 느려짐\n"
-            "botsort_noreid: ReID 없이 추적 — CPU 에서 가장 빠름"
+            "BoT-SORT (ReID 끔): 기본. 위치·움직임으로만 추적. GPU 비교에서 정확도는 같고 19% 빨랐다\n"
+            "BoT-SORT + ReID: 차량 외형(생김새)도 비교한다. 다시 비교해 보고 싶을 때 선택\n"
+            "ByteTrack: 가장 단순한 추적"
         )
-        tracker_cfg = Path(str(self.cfg_defaults.get("tracker_config", "config/botsort_stable.yaml"))).as_posix()
-        self.tracker_combo.setCurrentText(
-            next((name for name, path in TRACKER_CONFIGS.items() if path == tracker_cfg), "botsort")
-        )
+        tracker_cfg = Path(str(self.cfg_defaults.get("tracker_config", DEFAULT_TRACKER))).as_posix()
+        if tracker_cfg == "config/botsort_cpu.yaml":
+            tracker_cfg = "config/botsort_stable.yaml"
+        index = self.tracker_combo.findData(tracker_cfg)
+        self.tracker_combo.setCurrentIndex(index if index >= 0 else self.tracker_combo.findData(DEFAULT_TRACKER))
         self.tracker_combo.currentIndexChanged.connect(lambda _i: self._update_runtime_label())
 
         row = 0
@@ -1133,8 +1139,9 @@ class MainWindow(QMainWindow):
             logger.debug("실행 모드 판단 실패", exc_info=True)
             self.runtime_label.setText("")
             return
-        selected = TRACKER_CONFIGS.get(self.tracker_combo.currentText(), TRACKER_CONFIGS["botsort"])
-        tracker = Path(effective_tracker(plan, selected, str(self.cfg_defaults.get("cpu_tracker_config") or ""))).stem
+        selected = str(self.tracker_combo.currentData() or DEFAULT_TRACKER)
+        effective = Path(effective_tracker(plan, selected, str(self.cfg_defaults.get("cpu_tracker_config") or ""))).as_posix()
+        tracker = TRACKER_LABELS.get(effective, Path(effective).stem)
         fp16 = getattr(self, "precision_combo", None) is not None and self.precision_combo.currentData() == "fp16"
         text = f"→ {plan.label}" + (" · FP16" if fp16 and plan.mode == "gpu" and not plan.openvino else "") + f" · 추적 {tracker}"
         if plan.warning:
@@ -1448,8 +1455,7 @@ class MainWindow(QMainWindow):
 
     def _build_overrides(self) -> Dict:
         """Collect overrides for detection and tracking."""
-        tracker_name = self.tracker_combo.currentText() if hasattr(self, "tracker_combo") else "botsort"
-        tracker_config = TRACKER_CONFIGS.get(tracker_name, TRACKER_CONFIGS["botsort"])
+        tracker_config = str(self.tracker_combo.currentData() or DEFAULT_TRACKER) if hasattr(self, "tracker_combo") else DEFAULT_TRACKER
         junction_name = self.junction_input.text().strip() if hasattr(self, "junction_input") else ""
         session_name = self.session_input.text().strip() if hasattr(self, "session_input") else ""
         return {

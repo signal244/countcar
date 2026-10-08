@@ -3,7 +3,7 @@
   "camera_id": "cam01",
   "db_path": "output/tracks.sqlite",
   "model_path": "models/yolo26n_v1.pt",
-  "tracker_config": "config/botsort_stable.yaml",
+  "tracker_config": "config/botsort_noreid.yaml",
   "runtime_mode": "auto",
   "precision": "fp32",
   "cpu_tracker_config": "config/botsort_cpu.yaml",

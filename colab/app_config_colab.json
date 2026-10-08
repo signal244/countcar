@@ -4,7 +4,7 @@
   "db_path": "/content/tracks.sqlite",
   "model_path": "models/yolo8m_v1.pt",
   "precision": "fp16",
-  "tracker_config": "config/botsort_stable.yaml",
+  "tracker_config": "config/botsort_noreid.yaml",
   "runtime_mode": "gpu",
   "cpu_tracker_config": "config/botsort_cpu.yaml",
   "yolo_imgsz": 1920,

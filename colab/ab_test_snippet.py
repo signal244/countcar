@@ -7,6 +7,10 @@
 
 이력: 2026-10-03 추적 설정 테스트(proximity_thresh 0.3, max_idle_frames 90, confidence 0.1)
       -> B 채택, 기본 설정에 반영. 결과는 output/ab_test/ 바로 아래에 있다.
+      2026-10-08 02_reid_onoff: GPU 에서 ReID 켬(A) vs 끔(B). 모델·크기·정밀도는 app_config_colab.json
+      (yolo8m_v1, 1920, fp16). 정확도 차이 없이 끔이 19% 빨라 기본값을 ReID 끔(botsort_noreid)으로 바꿈.
+      이제 A(설정 그대로)는 ReID 끔이다. 다시 비교하려면 TEST_NAME 을 새 이름으로 바꾸고
+      B 를 {"tracker_config": "config/botsort_stable.yaml"} (ReID 켬)으로 둔다.
 """
 
 from __future__ import annotations
@@ -14,9 +18,9 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import sqlite3
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -27,11 +31,12 @@ drive.mount("/content/drive")
 # ===== 테스트 설정 =====
 VIDEO_REL = "AB테스트/경원교사거리_오후첨두_10-35분.mp4"   # MyDrive/video/ 아래 경로
 LINES_REL = "config/lines/경원교/경원교(3방향).json"
-TEST_NAME = "02_다음테스트"
+TEST_NAME = "02_reid_onoff"
 VARIANTS = {
-    "A": {},  # app_config_colab.json 그대로
-    "B": {},  # 시험할 변경, 예: {"tracker_config": "config/다른설정.yaml", "max_idle_frames": 120}
+    "A": {},  # app_config_colab.json 그대로 (BoT-SORT + ReID)
+    "B": {"tracker_config": "config/botsort_noreid.yaml"},  # 같은 BoT-SORT 에서 ReID 만 끔
 }
+TRUTH_REL = "release/sample/정답_15-30분.json"  # 이 클립 5~20분 구간의 확정 교통량
 UNASSIGN_AT_END = True  # 끝나면 GPU 런타임 반납
 # =======================
 
@@ -44,7 +49,10 @@ OUT_DIR = ROOT / "output" / "ab_test" / TEST_NAME
 LOCAL_VIDEO = Path("/content/ab_input.mp4")
 
 os.chdir(ROOT)
-subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", "colab/requirements_colab.txt"], check=True)
+sys.path[:0] = [str(ROOT), str(ROOT / "colab")]
+from colab_io import backup_sqlite  # noqa: E402
+
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", "colab/requirements_colab.txt", "lap"], check=True)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 print("VIDEO:", DRIVE_VIDEO, "exists:", DRIVE_VIDEO.exists(), flush=True)
@@ -88,13 +96,16 @@ def run_variant(name: str, overrides: dict) -> Path:
         "--line-settings", LINES_REL,
         "--session-id", f"AB_{name}",
     ]
+    t0 = time.time()
     run_streaming(cmd)
+    times_path = OUT_DIR / "ab_times.json"
+    times = json.loads(times_path.read_text(encoding="utf-8")) if times_path.exists() else {}
+    times[name] = round(time.time() - t0, 1)
+    times_path.write_text(json.dumps(times), encoding="utf-8")
 
-    tmp = drive_db.with_suffix(".sqlite.tmp")
-    with sqlite3.connect(str(local_db)) as src, sqlite3.connect(str(tmp)) as dst:
-        src.backup(dst)
-    tmp.replace(drive_db)
-    print(f"[{name}] 완료 {datetime.now():%H:%M:%S} -> {drive_db}", flush=True)
+    if not backup_sqlite(local_db, drive_db):
+        raise RuntimeError(f"Drive 저장 실패: {drive_db}")
+    print(f"[{name}] 완료 {datetime.now():%H:%M:%S} ({times[name] / 60:.1f}분) -> {drive_db}", flush=True)
     return drive_db
 
 
@@ -106,6 +117,9 @@ run_streaming(
         sys.executable, "colab/ab_compare.py",
         "--a", str(dbs["A"]), "--b", str(dbs["B"]),
         "--lines", LINES_REL,
+        "--truth", TRUTH_REL,
+        "--config", "colab/app_config_colab.json",
+        "--times", str(OUT_DIR / "ab_times.json"),
         "--out", str(OUT_DIR / "ab_result.txt"),
     ]
 )
