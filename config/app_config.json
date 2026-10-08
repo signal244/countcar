@@ -5,6 +5,7 @@
   "model_path": "models/yolo26n_v1.pt",
   "tracker_config": "config/botsort_stable.yaml",
   "runtime_mode": "auto",
+  "precision": "fp32",
   "cpu_tracker_config": "config/botsort_cpu.yaml",
   "yolo_imgsz": "auto",
   "yolo_rect": true,

@@ -60,6 +60,8 @@ def validate_app_config(cfg: Dict[str, Any]) -> ValidationReport:
     _number_in_range(cfg, "target_fps", report, minimum=0.01)
     if str(cfg.get("yolo_imgsz", "")).strip().lower() != "auto":
         _number_in_range(cfg, "yolo_imgsz", report, minimum=32.0, integer=True)
+    if str(cfg.get("precision", "fp32") or "fp32").strip().lower() not in ("fp32", "fp16"):
+        report.errors.append("precision은 fp32 또는 fp16 이어야 합니다")
     mode = str(cfg.get("runtime_mode", "auto") or "auto").strip().lower()
     if mode not in ("auto", "gpu", "cpu"):
         report.errors.append("runtime_mode는 auto, gpu, cpu 중 하나여야 합니다")

@@ -81,6 +81,8 @@ def _apply_stable_class(meta: Dict) -> None:
 class DetectionTracker:
     """Run YOLO detection+tracking and log to SQLite."""
 
+    fp16 = False
+
     def __init__(
         self,
         model_path: Path | str,
@@ -99,8 +101,11 @@ class DetectionTracker:
         target_fps: Optional[float] = None,
         max_idle_frames: int = 30,
         flush_interval_minutes: Optional[int] = 15,
+        fp16: bool = False,
     ):
         self.model = YOLO(str(model_path))
+        # GPU 에서 .pt 를 16비트로 계산(모델 파일 변환 없음). 호출하는 쪽이 GPU 일 때만 켠다.
+        self.fp16 = bool(fp16)
         self.class_mapping = class_mapping
         self.apply_class_mapping = bool(apply_class_mapping)
         self.camera_id = camera_id
@@ -169,6 +174,7 @@ class DetectionTracker:
         except Exception:
             logger.debug("Suppressed error", exc_info=True)
 
+        precision = {"quantize": 16} if self.fp16 else {}
         try:
             stream = self.model.track(
                 source=source_path,
@@ -181,6 +187,7 @@ class DetectionTracker:
                 classes=self.allowed_classes,
                 vid_stride=vid_stride,
                 verbose=False,
+                **precision,
             )
         except TypeError:
             stream = self.model.track(
@@ -193,6 +200,7 @@ class DetectionTracker:
                 classes=self.allowed_classes,
                 vid_stride=vid_stride,
                 verbose=False,
+                **precision,
             )
 
         sample_idx = 0

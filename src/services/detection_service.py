@@ -169,6 +169,8 @@ def build_tracker(
         classes = read_model_classes(plan.model_path)
         allowed_classes = suggest_detect_class_ids(classes, suggest_excel_mapping([classes[c] for c in sorted(classes)])[0]) if classes else None
     apply_class_mapping = not can_auto_download_model(raw_model)
+    # FP16 은 GPU 에서 .pt 를 돌릴 때만 의미가 있다(CPU·OpenVINO 변환 모델은 무시).
+    fp16 = str(cfg.get("precision") or "fp32").lower() == "fp16" and plan.mode == "gpu" and not plan.openvino
     tracker = DetectionTracker(
         model_path=model_source,
         class_mapping=class_mapping,
@@ -188,6 +190,7 @@ def build_tracker(
         flush_interval_minutes=(
             int(cfg.get("flush_interval_minutes", 15)) if cfg.get("flush_interval_minutes") else None
         ),
+        fp16=fp16,
     )
     return TrackerBuildResult(
         tracker=tracker,
@@ -198,7 +201,7 @@ def build_tracker(
             "yolo_imgsz": yolo_imgsz,
             "yolo_rect": yolo_rect,
             "apply_class_mapping": apply_class_mapping,
-            "runtime": plan.label,
+            "runtime": plan.label + (" · FP16" if fp16 else ""),
             "runtime_warning": plan.warning,
             "tracker_config": str(tracker_path or ""),
         },
@@ -243,6 +246,7 @@ def _delete_session(conn: sqlite3.Connection, session_id: str) -> None:
         "track_exclusion_runs",
         "track_trajs",
         "tracks",
+        "detection_runs",
     )
     for table in tables:
         exists = conn.execute(

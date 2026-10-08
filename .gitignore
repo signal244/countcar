@@ -22,6 +22,8 @@ output/
 *_openvino_model/
 # Ultralytics 가 예제 데이터(coco8 등)를 내려받는 곳
 datasets/
+# GUI 일괄 탐지 창에서 Colab 용으로 내보낸 작업 목록(Drive 경로가 담긴 개인 작업 파일)
+colab/batch_jobs/
 
 # Local GUI/runtime preferences
 config/user_state.json

@@ -111,6 +111,7 @@ GUI·CLI 는 `.pt` 만 고르고, `src/config/runtime.py` 의 `plan_runtime` 이
 ## 주요 경로
 
 - `src/services/detection_service.py` — GUI·CLI·Colab 공통 탐지 서비스
+- `src/services/batch_detection.py` — 여러 영상 연속 탐지(교차로별 DB, 영상별 세션, detection_runs 완료 기록으로 이어서 하기). GUI `src/ui/batch_detect_window.py`, CLI `src/pipeline/batch_detect.py` 가 공유
 - `src/pipeline/` — 탐지, 추적, 병합, 가상 이벤트, 카운팅
 - `src/db/` — SQLite 스키마와 저장기
 - `src/ui/` — PySide6 GUI (`widgets.py` 에 공통 위젯·헬퍼)

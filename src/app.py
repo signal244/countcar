@@ -57,6 +57,7 @@ from src.ui.class_dialogs import CountClassMappingDialog, DetectClassDialog
 from src.ui.line_drawer import LineDrawerWindow
 from src.ui.model_selector import ModelComboBox
 from src.ui.theme import DARK_DIALOG_STYLE, MAIN_WINDOW_STYLE
+from src.ui.batch_detect_window import BatchDetectWindow
 from src.ui.vehicle_preview import VehiclePreviewWindow
 from src.ui.widgets import (
     StatusBar,
@@ -181,6 +182,11 @@ class MainWindow(QMainWindow):
                     return
         except Exception:
             logger.debug("Suppressed error", exc_info=True)
+
+        batch = getattr(self, "batch_window", None)
+        if batch is not None and batch.is_running() and not batch.close():
+            event.ignore()
+            return
 
         if not self._close_child_windows():
             QMessageBox.warning(self, "종료 지연", "하위 창의 백그라운드 작업이 아직 종료되지 않았습니다. 잠시 후 다시 시도하세요.")
@@ -440,6 +446,16 @@ class MainWindow(QMainWindow):
             "Colab 코드 생성은 이 선택과 관계없이 항상 .pt + GPU 로 내보낸다."
         )
         self.runtime_combo.currentIndexChanged.connect(lambda _i: self._update_runtime_label())
+        self.precision_combo = QComboBox()
+        self.precision_combo.addItem("FP32", "fp32")
+        self.precision_combo.addItem("FP16 (GPU 빠름)", "fp16")
+        index = self.precision_combo.findData(str(self.cfg_defaults.get("precision", "fp32")).lower())
+        self.precision_combo.setCurrentIndex(max(0, index))
+        self.precision_combo.setToolTip(
+            "GPU 에서 .pt 모델을 계산하는 정밀도. FP16 은 모델 파일 변환 없이 GPU 계산만 16비트로 해서 빨라지고,\n"
+            "결과는 사실상 같습니다. CPU(OpenVINO) 모드에서는 쓰이지 않습니다."
+        )
+        self.precision_combo.currentIndexChanged.connect(lambda _i: self._update_runtime_label())
         self.runtime_label = QLabel("")
         self.runtime_label.setWordWrap(True)
 
@@ -529,7 +545,9 @@ class MainWindow(QMainWindow):
         row += 1
         layout.addWidget(self._cap("실행 모드"), row, 0)
         layout.addWidget(self.runtime_combo, row, 1)
-        layout.addWidget(self.runtime_label, row, 2, 1, 6)
+        layout.addWidget(self.runtime_label, row, 2, 1, 4)
+        layout.addWidget(self._cap("정밀도"), row, 6)
+        layout.addWidget(self.precision_combo, row, 7)
 
         row += 1
         layout.addWidget(self._cap("탐지 차종"), row, 0)
@@ -702,14 +720,20 @@ class MainWindow(QMainWindow):
         detect_btn.setProperty("btnType", "secondary")
         detect_btn.clicked.connect(self.on_run)
 
+        batch_btn = QPushButton("📂 일괄 탐지(여러 영상)")
+        batch_btn.setProperty("btnType", "secondary")
+        batch_btn.setToolTip("여러 영상을 골라 차례로 탐지·궤적 저장합니다. 교차로별 DB, 영상별 세션으로 자동 저장합니다.")
+        batch_btn.clicked.connect(self.on_batch_detect)
+
         extract_btn = QPushButton("🖼 Extract Images + Labels")
         extract_btn.clicked.connect(self.on_extract_images)
 
-        gpu_label = QLabel("⚠️ GPU 필요")
+        gpu_label = QLabel("GPU 가 없으면 CPU(변환 모델)로 실행")
         gpu_label.setStyleSheet("color: #f59e0b; font-weight: 600;")
 
         local_row = QHBoxLayout()
         local_row.addWidget(detect_btn)
+        local_row.addWidget(batch_btn)
         local_row.addWidget(extract_btn)
         local_row.addWidget(gpu_label)
         local_row.addStretch()
@@ -1111,7 +1135,8 @@ class MainWindow(QMainWindow):
             return
         selected = TRACKER_CONFIGS.get(self.tracker_combo.currentText(), TRACKER_CONFIGS["botsort"])
         tracker = Path(effective_tracker(plan, selected, str(self.cfg_defaults.get("cpu_tracker_config") or ""))).stem
-        text = f"→ {plan.label} · 추적 {tracker}"
+        fp16 = getattr(self, "precision_combo", None) is not None and self.precision_combo.currentData() == "fp16"
+        text = f"→ {plan.label}" + (" · FP16" if fp16 and plan.mode == "gpu" and not plan.openvino else "") + f" · 추적 {tracker}"
         if plan.warning:
             text += f"\n⚠ {plan.warning}"
         self.runtime_label.setText(text)
@@ -1436,6 +1461,7 @@ class MainWindow(QMainWindow):
             "tail_seconds": float(self.tail_input.value()),
             "yolo_imgsz": "auto" if self.imgsz_combo.currentText() == "auto" else int(self.imgsz_combo.currentText()),
             "runtime_mode": str(self.runtime_combo.currentData() or "auto") if hasattr(self, "runtime_combo") else "auto",
+            "precision": str(self.precision_combo.currentData() or "fp32") if hasattr(self, "precision_combo") else "fp32",
             "yolo_rect": True,
             "confidence_threshold": float(self.conf_input.value()),
             "model_path": self._current_model_path(),
@@ -1633,9 +1659,27 @@ class MainWindow(QMainWindow):
     def on_count_approach(self) -> None:
         self._run_count_common("approach")
 
+    def on_batch_detect(self) -> None:
+        window = getattr(self, "batch_window", None)
+        if window is None:
+            window = BatchDetectWindow(
+                self.cfg_path,
+                base_overrides_fn=self._build_overrides,
+                is_busy_fn=lambda: bool(self.worker and self.worker.isRunning()),
+                parent=self,
+            )
+            self.batch_window = window
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
     def on_run(self) -> None:
         if self.worker and self.worker.isRunning():
             QMessageBox.information(self, "실행 중", "파이프라인이 이미 실행 중입니다.")
+            return
+        batch = getattr(self, "batch_window", None)
+        if batch is not None and batch.is_running():
+            QMessageBox.information(self, "실행 중", "일괄 탐지가 실행 중입니다. 끝난 뒤 실행하세요.")
             return
 
         video = self._get_active_video_path()
@@ -1682,6 +1726,10 @@ class MainWindow(QMainWindow):
             self._stop_worker(wait_ms=5000)
         except Exception:
             logger.debug("Suppressed error", exc_info=True)
+        batch = getattr(self, "batch_window", None)
+        if batch is not None and batch.is_running():
+            batch.worker.requestInterruption()
+            batch.worker.wait(10000)
         app = QApplication.instance()
         if app is not None:
             app.quit()

@@ -214,6 +214,22 @@ CREATE TABLE IF NOT EXISTS track_line_summary (
 """
 
 
+# 일괄 탐지의 영상별 실행 기록. status=done 이면서 track_trajs 에 세션이 있을 때만 완료로 본다
+# (세션을 지운 뒤 기록만 남은 경우 다시 처리하도록).
+CREATE_DETECTION_RUNS_SQL = """
+CREATE TABLE IF NOT EXISTS detection_runs (
+  session_id TEXT PRIMARY KEY,
+  video_path TEXT,
+  model_path TEXT,
+  status TEXT,
+  started_at TEXT,
+  finished_at TEXT,
+  sampled_frames INTEGER,
+  message TEXT
+);
+"""
+
+
 INDEX_SQL: Iterable[str] = [
     "CREATE INDEX IF NOT EXISTS idx_tracks_session_cam_time ON tracks(session_id, camera_id, timestamp_ms)",
     "CREATE INDEX IF NOT EXISTS idx_tracks_track ON tracks(session_id, camera_id, track_id)",
@@ -255,6 +271,7 @@ def init_db(db_path: Path) -> None:
         cur.execute(CREATE_TRACK_VIRTUAL_EVENTS_SQL)
         cur.execute(CREATE_TRACK_LINE_EVENTS_SQL)
         cur.execute(CREATE_TRACK_LINE_SUMMARY_SQL)
+        cur.execute(CREATE_DETECTION_RUNS_SQL)
         for stmt in INDEX_SQL:
             cur.execute(stmt)
         applied_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
