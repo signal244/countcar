@@ -32,7 +32,8 @@ from PySide6.QtWidgets import (
 from src.config.model_profiles import (
     OPTIONAL_EXCEL_MAPPING,
     ModelProfile,
-    suggest_excel_mapping,
+    default_excel_target,
+    order_excel_columns,
 )
 from src.ui.theme import DARK_DIALOG_STYLE
 from src.ui.widgets import apply_button_tooltips
@@ -178,7 +179,12 @@ class CountClassMappingDialog(QDialog):
             combo.addItem(self.EXCLUDED_LABEL)
             for target in known_targets:
                 combo.addItem(target)
-            current = profile.excel_mapping.get(name, "")
+            # 저장된 값이 있으면 그대로(빈 값은 사용자가 고른 '제외'), 없으면 기본 열.
+            # 한글로 저장된 DB 차종(승용차 등)은 같은 이름의 열로 바로 연결된다.
+            if name in profile.excel_mapping:
+                current = profile.excel_mapping[name]
+            else:
+                current = default_excel_target(name) if self._is_db_name(name) or not profile.excel_mapping else ""
             combo.setCurrentText(current if current else self.EXCLUDED_LABEL)
             combo.currentTextChanged.connect(self._refresh_column_order)
             self.table.setCellWidget(row, 2, combo)
@@ -217,6 +223,8 @@ class CountClassMappingDialog(QDialog):
         layout.addWidget(buttons)
         self.setLayout(layout)
 
+        # 저장된 열 순서를 먼저 깔고, 새로 생긴 열만 기본 순서대로 뒤에 붙인다.
+        self.order_list.addItems(list(profile.excel_columns))
         self._refresh_column_order()
         apply_button_tooltips(self)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setToolTip("차종별 Excel 열 매핑과 순서를 저장합니다. 원본 DB 트랙은 변경하지 않습니다.")
@@ -228,12 +236,11 @@ class CountClassMappingDialog(QDialog):
         for value in self._profile.excel_mapping.values():
             if value and value not in targets:
                 targets.append(value)
-        if not targets:
-            suggested_map, suggested_cols = suggest_excel_mapping(self._class_names)
-            targets = list(suggested_cols)
-            for value in suggested_map.values():
-                if value and value not in targets:
-                    targets.append(value)
+        for name in self._class_names:
+            target = default_excel_target(name)
+            if target and target not in targets:
+                targets.append(target)
+        targets = order_excel_columns(targets)
         # 기본 열에는 없지만 이 모델이 인식하는 차종(이륜차·자전거)은
         # 직접 타이핑하지 않고도 고를 수 있게 후보로 넣어 둔다.
         lowered = {n.lower() for n in self._class_names}
@@ -241,6 +248,9 @@ class CountClassMappingDialog(QDialog):
             if class_name in lowered and target not in targets:
                 targets.append(target)
         return targets
+
+    def _is_db_name(self, name: str) -> bool:
+        return name in self._db_counts
 
     def _current_mapping(self) -> Dict[str, str]:
         mapping: Dict[str, str] = {}
@@ -255,9 +265,7 @@ class CountClassMappingDialog(QDialog):
         targets = list(dict.fromkeys(self._current_mapping().values()))
         previous = [self.order_list.item(i).text() for i in range(self.order_list.count())]
         ordered = [c for c in previous if c in targets]
-        for target in targets:
-            if target not in ordered:
-                ordered.append(target)
+        ordered += order_excel_columns([t for t in targets if t not in ordered])
         self.order_list.clear()
         self.order_list.addItems(ordered)
 
@@ -271,11 +279,11 @@ class CountClassMappingDialog(QDialog):
         self.order_list.setCurrentRow(target_row)
 
     def _reset_to_suggested(self) -> None:
-        suggested_map, _ = suggest_excel_mapping(self._class_names)
         for name, combo in self._combos.items():
-            target = suggested_map.get(name, "")
+            target = default_excel_target(name)
             combo.setCurrentText(target if target else self.EXCLUDED_LABEL)
         self.order_list.clear()
+        self.order_list.addItems(order_excel_columns(list(self._current_mapping().values())))
         self._refresh_column_order()
 
     def _on_accept(self) -> None:
@@ -285,7 +293,10 @@ class CountClassMappingDialog(QDialog):
         self.accept()
 
     def result_mapping(self) -> Dict[str, str]:
-        return self._current_mapping()
+        """집계 매핑. '(제외)'로 고른 차종은 빈 값으로 남겨 집계에서 확실히 뺀다."""
+        mapping = {name: "" for name in self._combos}
+        mapping.update(self._current_mapping())
+        return mapping
 
     def result_columns(self) -> List[str]:
         return [self.order_list.item(i).text() for i in range(self.order_list.count())]

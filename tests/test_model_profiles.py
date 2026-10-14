@@ -6,6 +6,8 @@ from pathlib import Path
 from src.config.model_profiles import (
     ModelProfile,
     ModelProfileStore,
+    default_excel_target,
+    order_excel_columns,
     suggest_detect_class_ids,
     suggest_excel_mapping,
 )
@@ -42,7 +44,7 @@ class ExcelMappingTests(unittest.TestCase):
         mapping, columns = suggest_excel_mapping(list(BEST_PT_CLASSES.values()))
         self.assertEqual(columns, ["승용차", "소형버스", "대형버스", "소형화물", "중형화물", "대형화물"])
         # etc 와 medium_truck 은 같은 열로 합쳐진다.
-        self.assertEqual(mapping["etc"], "중형화물")
+        self.assertEqual(mapping["etc"], "대형화물")
         self.assertEqual(mapping["medium_truck"], "중형화물")
         self.assertNotIn("person", mapping)
 
@@ -65,6 +67,21 @@ class ExcelMappingTests(unittest.TestCase):
         mapping, columns = suggest_excel_mapping(["ev_car", "scooter"])
         self.assertEqual(mapping, {"ev_car": "ev_car", "scooter": "scooter"})
         self.assertEqual(columns, ["ev_car", "scooter"])
+
+    def test_korean_db_names_default_to_same_column(self) -> None:
+        # 커스텀 모델 DB 에는 차종이 한글로 저장된다. 같은 이름의 열로 바로 연결돼야 한다.
+        for name in ["승용차", "소형버스", "대형버스", "소형화물", "중형화물", "대형화물"]:
+            self.assertEqual(default_excel_target(name), name)
+        self.assertEqual(default_excel_target("passenger_car"), "승용차")
+        self.assertEqual(default_excel_target("truck"), "화물")
+        self.assertEqual(default_excel_target("person"), "")
+
+    def test_columns_follow_standard_order(self) -> None:
+        shuffled = ["소형버스", "승용차", "중형화물", "대형화물", "대형버스", "소형화물", "기타"]
+        self.assertEqual(
+            order_excel_columns(shuffled),
+            ["승용차", "소형버스", "대형버스", "소형화물", "중형화물", "대형화물", "기타"],
+        )
 
 
 class DetectClassDefaultTests(unittest.TestCase):

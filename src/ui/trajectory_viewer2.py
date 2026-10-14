@@ -402,15 +402,35 @@ def _load_sessions(db_path: Path) -> List[str]:
     return sorted(sessions)
 
 
+def _background_frame_index(cap) -> int:
+    """배경으로 쓸 프레임 번호(영상 가운데). 프레임 수를 모르면 0."""
+    try:
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    except Exception:
+        logger.debug("프레임 수 읽기 실패", exc_info=True)
+        return 0
+    return total // 2 if total > 1 else 0
+
+
 def _load_background(
     video_path: Optional[Path],
     resize_target: Optional[Tuple[int, int]],
+    frame_index: Optional[int] = None,
 ) -> Tuple[Optional[QGraphicsPixmapItem], float, float]:
     video_path = _resolve_existing_path(video_path)
     if not video_path or not video_path.exists():
         return None, 0.0, 0.0
     cap = cv2.VideoCapture(str(video_path))
-    ok, frame = cap.read()
+    # 촬영 초반에는 카메라 각도를 맞추느라 화면이 움직이는 경우가 있어 첫 프레임 대신 가운데 프레임을 쓴다.
+    # 사용자가 슬라이더로 고른 프레임이 있으면 그 프레임을 쓴다.
+    ok, frame = False, None
+    target = int(frame_index) if frame_index is not None else _background_frame_index(cap)
+    if target > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, float(target))
+        ok, frame = cap.read()
+    if not ok or frame is None:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0.0)
+        ok, frame = cap.read()
     cap.release()
     if not ok or frame is None:
         return None, 0.0, 0.0
@@ -422,6 +442,31 @@ def _load_background(
     item = QGraphicsPixmapItem(QPixmap.fromImage(image))
     item.setPos(0.0, 0.0)
     return item, float(w), float(h)
+
+
+VIDEO_SUFFIXES = (".mp4", ".avi", ".mov", ".mkv")
+
+
+def _normalize_session_name(text: str) -> str:
+    # 일괄 탐지 영상은 "교차로_세션.mp4", 세션은 "교차로 세션" 이라 밑줄과 공백을 같게 본다.
+    return " ".join(str(text or "").replace("_", " ").split()).lower()
+
+
+def _matching_session_video(session_id: Optional[str], current_video: Optional[Path]) -> Optional[Path]:
+    """현재 영상과 같은 폴더에서 세션 이름과 파일 이름이 같은 영상을 찾는다. 없으면 None."""
+    if not session_id or current_video is None:
+        return None
+    folder = Path(current_video).parent
+    if not folder.is_dir():
+        return None
+    wanted = _normalize_session_name(session_id)
+    try:
+        for candidate in folder.iterdir():
+            if candidate.suffix.lower() in VIDEO_SUFFIXES and _normalize_session_name(candidate.stem) == wanted:
+                return candidate
+    except OSError:
+        logger.debug("세션 영상 찾기 실패: %s", folder, exc_info=True)
+    return None
 
 
 def _probe_video_size(video_path: Optional[Path]) -> Optional[Tuple[int, int]]:
@@ -1097,10 +1142,10 @@ class _TrajectoryLoadWorker(QObject):
                         self.progress.emit(f"로딩 중... tracks={track_count}")
                     tracks_batch.append((str(tid), pts, group_label, str(cls_name or "")))
                     if len(tracks_batch) >= self.batch_size_tracks:
-                        self.batch_ready.emit(tracks_batch)
+                        self.batch_ready.emit((self.token, tracks_batch))
                         tracks_batch = []
                 if tracks_batch:
-                    self.batch_ready.emit(tracks_batch)
+                    self.batch_ready.emit((self.token, tracks_batch))
                 self.finished.emit({"token": self.token, "track_count": track_count})
         except Exception as exc:
             self.error.emit(str(exc))
@@ -1123,8 +1168,9 @@ class TrajectoryViewer2Window(QMainWindow):
         fit_to_screen(self, 1350, 1000)
         self.config_path = config_path
         self._config_geometry_key = "trajectory2_window_geometry"
-        self._config_splitter_key = "trajectory2_splitter_sizes"
-        self._config_bottom_splitter_key = "trajectory2_bottom_splitter_sizes"
+        # 좌(이미지)/우(설정) 배치로 바뀌어 예전 위/아래 크기 값과 섞이지 않게 새 키를 쓴다.
+        self._config_splitter_key = "trajectory2_lr_splitter_sizes"
+        self._config_bottom_splitter_key = "trajectory2_right_splitter_sizes"
         self._config_opts_key = "trajectory_viewer2_options"
         self._restoring_options = False
         self._restore_session_id: Optional[str] = None
@@ -1232,30 +1278,8 @@ class TrajectoryViewer2Window(QMainWindow):
         self.btn_manual_extrap_fwd = QPushButton("선택1개 앞외삽")
         self.btn_manual_extrap_back = QPushButton("선택1개 뒤외삽")
         self.btn_manual_clear = QPushButton("선택 초기화")
-        self.view_db_btn.setFixedWidth(104)
-        self.btn_config_merge.setFixedWidth(104)
-        self.btn_config_extrap.setFixedWidth(104)
+        # 버튼 폭은 고정하지 않고 칸 폭을 따른다(_button_grid). 위아래 버튼 폭이 같아진다.
         self.btn_preview_merge.setText("병합 미리보기")
-        self.btn_preview_merge.setFixedWidth(118)
-        self.btn_run_merge.setFixedWidth(96)
-        self.btn_cancel_merge.setFixedWidth(96)
-        self.btn_merge_relaxed.setFixedWidth(118)
-        self.btn_merge_debug.setFixedWidth(104)
-        self.btn_preview_extrap.setFixedWidth(125)
-        self.btn_run_extrap.setFixedWidth(96)
-        self.btn_cancel_extrap.setFixedWidth(96)
-        self.btn_manual_pick.setFixedWidth(96)
-        self.btn_manual_merge.setFixedWidth(126)
-        self.btn_manual_extrap_fwd.setFixedWidth(118)
-        self.btn_manual_extrap_back.setFixedWidth(118)
-        self.btn_manual_clear.setFixedWidth(88)
-        self.fit_btn.setFixedWidth(92)
-        self.reset_zoom_btn.setFixedWidth(78)
-        self.bg_toggle_btn.setFixedWidth(118)
-        self.view_db_btn.setFixedWidth(118)
-        self.view_postprocess_btn.setFixedWidth(118)
-        self.reload_btn.setFixedWidth(96)
-        self.quit_btn.setFixedWidth(118)
         self.line_id_input = QLineEdit()
         self.line_id_input.setPlaceholderText("line_1")
         self.bound_input = QComboBox()
@@ -1305,7 +1329,6 @@ class TrajectoryViewer2Window(QMainWindow):
         self.btn_undo = QPushButton("↩ 되돌리기")
         self.btn_undo.setProperty("btnType", "danger")
         self.btn_undo.setEnabled(False)
-        self.btn_undo.setFixedWidth(110)
 
         # ── 기능 6: 배경 프레임 탐색 슬라이더 ──
         self.frame_slider = QSlider(Qt.Orientation.Horizontal)
@@ -1313,9 +1336,12 @@ class TrajectoryViewer2Window(QMainWindow):
         self.frame_slider.setValue(0)
         self.frame_slider.setEnabled(False)
         self.frame_slider_label = QLabel("프레임: 0")
-        self.frame_slider_label.setFixedWidth(100)
+        self.frame_slider_label.setFixedWidth(190)
         self._video_cap: Optional[object] = None
         self._video_total_frames = 0
+        self._video_fps = 0.0
+        # 슬라이더로 고른 배경 프레임. None 이면 영상 가운데 프레임. 영상이 바뀌면 None 으로 되돌린다.
+        self._bg_frame_index: Optional[int] = None
 
         self.view = _AutoFitView()
         self.view.setAlignment(Qt.AlignCenter)
@@ -1351,7 +1377,7 @@ class TrajectoryViewer2Window(QMainWindow):
         return w
 
     def _build_ui(self) -> None:
-        self.splitter = QSplitter(Qt.Orientation.Vertical)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setChildrenCollapsible(False)
         top = QWidget()
         top_layout = QVBoxLayout()
@@ -1377,76 +1403,73 @@ class TrajectoryViewer2Window(QMainWindow):
         sess_row = QHBoxLayout(); sess_row.addWidget(self.session_combo, stretch=1); sess_row.addWidget(self.refresh_sessions_btn)
         slot_row = QHBoxLayout(); slot_row.addWidget(self.slot_combo, stretch=1); slot_row.addWidget(self.refresh_slots_btn)
         video_row = QHBoxLayout(); video_row.addWidget(self.video_input, stretch=1); video_row.addWidget(self.pick_video_btn)
-        traj_grid.addWidget(cap("DB 경로"), 0, 0); traj_grid.addWidget(self._wrap(db_row), 0, 1)
-        traj_grid.addWidget(cap("session_id"), 0, 2); traj_grid.addWidget(self._wrap(sess_row), 0, 3)
-        traj_grid.addWidget(cap("슬롯(15분)"), 1, 0); traj_grid.addWidget(self._wrap(slot_row), 1, 1)
-        traj_grid.addWidget(cap("영상 경로"), 1, 2); traj_grid.addWidget(self._wrap(video_row), 1, 3)
-        perf_row = QHBoxLayout()
-        perf_row.addWidget(cap("트랙 폭")); perf_row.addWidget(self.width_spin)
-        perf_row.addWidget(cap("프레임 간격")); perf_row.addWidget(self.frame_step_spin)
-        perf_row.addWidget(cap("최대 트랙 수")); perf_row.addWidget(self.max_tracks_spin)
-        traj_grid.addWidget(self._wrap(perf_row), 2, 0, 1, 4)
-        # ── 기능 4: 궤적 필터 행 ──
+        # 오른쪽 세로 패널: 한 줄에 한 항목씩.
+        traj_grid.addWidget(cap("DB 경로"), 0, 0); traj_grid.addWidget(self._wrap(db_row), 0, 1, 1, 3)
+        traj_grid.addWidget(cap("세션"), 1, 0); traj_grid.addWidget(self._wrap(sess_row), 1, 1, 1, 3)
+        traj_grid.addWidget(cap("슬롯(15분)"), 2, 0); traj_grid.addWidget(self._wrap(slot_row), 2, 1, 1, 3)
+        traj_grid.addWidget(cap("영상 경로"), 3, 0); traj_grid.addWidget(self._wrap(video_row), 3, 1, 1, 3)
+        perf_grid = QGridLayout()
+        perf_grid.addWidget(cap("트랙 폭"), 0, 0); perf_grid.addWidget(self.width_spin, 0, 1)
+        perf_grid.addWidget(cap("프레임 간격"), 0, 2); perf_grid.addWidget(self.frame_step_spin, 0, 3)
+        perf_grid.addWidget(cap("최대 트랙 수"), 1, 0); perf_grid.addWidget(self.max_tracks_spin, 1, 1)
+        perf_grid.setColumnStretch(4, 1)
+        traj_grid.addWidget(self._wrap(perf_grid), 4, 0, 1, 4)
+        # ── 기능 4: 궤적 필터 (검색칸 아래 줄에 차종 체크박스) ──
+        filter_box = QVBoxLayout()
+        search_row = QHBoxLayout()
+        search_row.addWidget(cap("🔍 필터"))
+        search_row.addWidget(self.track_filter_input, stretch=1)
+        filter_box.addLayout(search_row)
         filter_row = QHBoxLayout()
-        filter_row.addWidget(cap("🔍 필터"))
-        filter_row.addWidget(self.track_filter_input, stretch=1)
+        filter_box.addLayout(filter_row)
         self._class_filter_row = filter_row      # 체크박스는 로드 후 여기에 채운다
         filter_group = QGroupBox("🔍 궤적 필터")
         filter_group.setObjectName("groupGray")
-        filter_group.setLayout(filter_row)
-        traj_grid.addWidget(filter_group, 3, 0, 1, 4)
-        merge_row = QHBoxLayout()
-        merge_row.addWidget(self.btn_config_merge)
-        merge_row.addWidget(self.btn_merge_relaxed)
-        merge_row.addWidget(self.btn_merge_debug)
-        merge_row.addWidget(self.btn_preview_merge)
-        merge_row.addWidget(self.btn_run_merge)
-        merge_row.addWidget(self.btn_cancel_merge)
+        filter_group.setLayout(filter_box)
+        traj_grid.addWidget(filter_group, 5, 0, 1, 4)
+        merge_row = self._button_grid(
+            [self.btn_config_merge, self.btn_merge_relaxed, self.btn_merge_debug,
+             self.btn_preview_merge, self.btn_run_merge, self.btn_cancel_merge], columns=3)
         merge_group = QGroupBox("🔗 병합")
         merge_group.setObjectName("groupBlue")
         merge_group.setLayout(merge_row)
-        extrap_row = QHBoxLayout()
-        extrap_row.addWidget(self.btn_config_extrap)
-        extrap_row.addWidget(self.btn_preview_extrap)
-        extrap_row.addWidget(self.btn_run_extrap)
-        extrap_row.addWidget(self.btn_cancel_extrap)
+        extrap_row = self._button_grid(
+            [self.btn_config_extrap, self.btn_preview_extrap, self.btn_run_extrap, self.btn_cancel_extrap], columns=2)
         extrap_group = QGroupBox("📐 외삽")
         extrap_group.setObjectName("groupBlue")
         extrap_group.setLayout(extrap_row)
-        manual_row = QHBoxLayout()
-        manual_row.addWidget(self.btn_manual_pick)
-        manual_row.addWidget(self.btn_manual_merge)
-        manual_row.addWidget(self.btn_manual_extrap_fwd)
-        manual_row.addWidget(self.btn_manual_extrap_back)
-        manual_row.addWidget(self.btn_manual_clear)
+        manual_row = self._button_grid(
+            [self.btn_manual_pick, self.btn_manual_merge, self.btn_manual_extrap_fwd,
+             self.btn_manual_extrap_back, self.btn_manual_clear, self.btn_undo], columns=3)
         manual_group = QGroupBox("✋ 수동 보정")
         manual_group.setObjectName("groupGray")
         manual_group.setLayout(manual_row)
-        groups_row = QHBoxLayout()
-        groups_row.addWidget(merge_group, stretch=1)
-        groups_row.addWidget(extrap_group, stretch=1)
-        traj_grid.addWidget(self._wrap(groups_row), 4, 0, 1, 4)
-        groups_row2 = QHBoxLayout()
-        groups_row2.addWidget(manual_group, stretch=1)
-        # ── 기능 5: 되돌리기 버튼 ──
-        groups_row2.addWidget(self.btn_undo)
-        traj_grid.addWidget(self._wrap(groups_row2), 5, 0, 1, 4)
-        traj_grid.addItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding), 6, 0, 1, 4)
-        view_row = QHBoxLayout()
-        view_row.addWidget(self.fit_btn)
-        view_row.addWidget(self.reset_zoom_btn)
-        view_row.addWidget(self.bg_toggle_btn)
-        view_row.addWidget(self.view_db_btn)
-        view_row.addWidget(self.view_postprocess_btn)
-        misc_row = QHBoxLayout()
-        misc_row.addWidget(self.reload_btn)
-        misc_row.addWidget(self.zoom_label)
-        misc_row.addWidget(self.quit_btn)
-        zoom_row = QHBoxLayout()
+        # 병합·외삽·수동 보정은 체크한 하나만 그 아래에 버튼을 펼친다(되돌리기는 수동 보정 칸 안).
+        self._tool_groups = {"merge": merge_group, "extrap": extrap_group, "manual": manual_group}
+        self._tool_checks: Dict[str, QCheckBox] = {}
+        tool_pick_row = QHBoxLayout()
+        for key, label in (("merge", "병합"), ("extrap", "외삽"), ("manual", "수동 보정")):
+            check = QCheckBox(label)
+            check.setStyleSheet("QCheckBox { color: #e8f0ff; font-weight: 700; }")
+            check.toggled.connect(lambda on, k=key: self._on_tool_check_toggled(k, on))
+            tool_pick_row.addWidget(check)
+            self._tool_checks[key] = check
+        tool_pick_row.addStretch()
+        traj_grid.addWidget(self._wrap(tool_pick_row), 6, 0, 1, 4)
+        traj_grid.addWidget(merge_group, 7, 0, 1, 4)
+        traj_grid.addWidget(extrap_group, 8, 0, 1, 4)
+        traj_grid.addWidget(manual_group, 9, 0, 1, 4)
+        for group in self._tool_groups.values():
+            group.hide()
+        view_row = self._button_grid(
+            [self.reset_zoom_btn, self.bg_toggle_btn, self.view_db_btn, self.view_postprocess_btn], columns=2)
+        misc_row = self._button_grid([self.reload_btn, self.fit_btn, self.quit_btn], columns=3)
+        zoom_row = QVBoxLayout()
         zoom_row.addWidget(self._wrap(view_row))
-        zoom_row.addStretch()
         zoom_row.addWidget(self._wrap(misc_row))
-        traj_grid.addWidget(self._wrap(zoom_row), 6, 0, 1, 4)
+        zoom_row.addWidget(self.zoom_label)
+        traj_grid.addWidget(self._wrap(zoom_row), 10, 0, 1, 4)
+        traj_grid.setRowStretch(11, 1)
         traj_box.setLayout(traj_grid)
         line_box = QGroupBox("📏 라인 설정")
         line_box.setObjectName("groupTeal")
@@ -1464,15 +1487,18 @@ class TrajectoryViewer2Window(QMainWindow):
         list_row = QHBoxLayout(); list_row.addLayout(left_v); list_row.addLayout(right_grid)
         line_grid.addWidget(self._wrap(list_row), 2, 0, 1, 4)
         line_box.setLayout(line_grid)
-        self.bottom_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.bottom_splitter = QSplitter(Qt.Orientation.Vertical)
         self.bottom_splitter.setChildrenCollapsible(False)
         # 하단 설정 패널은 창이 작을 때 잘리지 않도록 각각 스크롤로 감싼다.
         self.bottom_splitter.addWidget(wrap_in_scroll(traj_box))
         self.bottom_splitter.addWidget(wrap_in_scroll(line_box))
-        self.bottom_splitter.setSizes([700, 500])
+        self.bottom_splitter.setSizes([560, 340])
+        # 왼쪽: 배치도 이미지+궤적, 오른쪽: 궤적·영상 설정 / 라인 설정(위아래).
         self.splitter.addWidget(top)
         self.splitter.addWidget(self.bottom_splitter)
-        self.splitter.setSizes([760, 240])
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setSizes([880, 470])
         container = QWidget()
         layout = QVBoxLayout()
         layout.addWidget(self.splitter, stretch=1)
@@ -1483,8 +1509,33 @@ class TrajectoryViewer2Window(QMainWindow):
         self.setCentralWidget(container)
         apply_button_tooltips(self)
 
+    def _on_tool_check_toggled(self, key: str, on: bool) -> None:
+        """병합/외삽/수동 보정 중 하나만 펼친다. 다시 누르면 접는다."""
+        if on:
+            for other, check in self._tool_checks.items():
+                if other != key and check.isChecked():
+                    check.blockSignals(True)
+                    check.setChecked(False)
+                    check.blockSignals(False)
+        for name, group in self._tool_groups.items():
+            group.setVisible(on and name == key)
+
+    @staticmethod
+    def _button_grid(buttons: List[QPushButton], columns: int) -> QGridLayout:
+        """버튼을 columns 칸씩 줄 바꿈해 놓는다. 칸 폭을 똑같이 나눠 위아래 버튼 폭이 같다."""
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(6)
+        for i, btn in enumerate(buttons):
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, btn.sizePolicy().verticalPolicy())
+            btn.setMinimumWidth(0)
+            grid.addWidget(btn, i // columns, i % columns)
+        for col in range(columns):
+            grid.setColumnStretch(col, 1)
+        return grid
+
     def _wire_signals(self) -> None:
-        self.refresh_sessions_btn.clicked.connect(lambda: self._refresh_sessions(select=self.session_combo.currentText() or None))
+        self.refresh_sessions_btn.clicked.connect(self._on_refresh_sessions_clicked)
         self.refresh_slots_btn.clicked.connect(self._refresh_slots)
         self.reload_btn.clicked.connect(self._reset_filter_mode)
         self.quit_btn.clicked.connect(self.close)
@@ -1538,6 +1589,11 @@ class TrajectoryViewer2Window(QMainWindow):
         # 드래그 중 모든 프레임을 디코딩하면 멈추므로, 라벨만 즉시 갱신하고
         # 실제 프레임 읽기는 멈춘 뒤(120ms) 한 번만 한다.
         self.frame_slider.valueChanged.connect(self._on_frame_slider_moved)
+        # 세션·슬롯을 빠르게 여러 번 바꿔도 마지막 선택으로 한 번만 다시 읽는다.
+        self._auto_reload_timer = QTimer(self)
+        self._auto_reload_timer.setSingleShot(True)
+        self._auto_reload_timer.setInterval(150)
+        self._auto_reload_timer.timeout.connect(self._reload_all)
         self._frame_seek_debounce = QTimer(self)
         self._frame_seek_debounce.setSingleShot(True)
         self._frame_seek_debounce.setInterval(120)
@@ -1702,7 +1758,7 @@ class TrajectoryViewer2Window(QMainWindow):
             self._ensure_base_matches_video(video_path)
         except Exception:
             logger.debug("Suppressed error", exc_info=True)
-        bg_item, bg_w, bg_h = _load_background(video_path, self.resize_target) if self._bg_enabled else (None, 0.0, 0.0)
+        bg_item, bg_w, bg_h = _load_background(video_path, self.resize_target, self._bg_frame_index) if self._bg_enabled else (None, 0.0, 0.0)
         self._bg_item = bg_item
         self._bg_size = (bg_w, bg_h)
         self.scene.clear()
@@ -1913,6 +1969,16 @@ class TrajectoryViewer2Window(QMainWindow):
             f"dir_ok_b={dir_ok_b}  dir_prog_b={dir_prog_b}  coming_src={self._is_coming_from(pts, src_line) if src_line else False}",
             f"final_cond_a={cond_a}  final_cond_b={cond_b}",
         ])
+
+    def _schedule_auto_reload(self) -> None:
+        timer = getattr(self, "_auto_reload_timer", None)   # 창을 만드는 도중에는 아직 없다
+        if timer is not None:
+            timer.start()
+
+    def _on_refresh_sessions_clicked(self) -> None:
+        """세션 목록을 다시 읽고, 선택된 세션의 궤적을 바로 불러온다."""
+        self._refresh_sessions(select=self.session_combo.currentText() or None)
+        self._schedule_auto_reload()
 
     def _refresh_sessions(self, select: Optional[str] = None) -> None:
         sessions = _load_sessions(Path(self.db_input.text().strip() or "output/tracks.sqlite"))
@@ -3566,14 +3632,16 @@ class TrajectoryViewer2Window(QMainWindow):
     def _on_session_changed(self, _txt: str) -> None:
         if self._restoring_options:
             return
+        # 세션을 바꾸면 그 세션의 슬롯 목록과 궤적을 바로 다시 읽는다(새로고침 없이).
+        self._refresh_slots()
         self._persist_options()
-        self._set_reload_pending(True, "session")
+        self._schedule_auto_reload()
 
     def _on_slot_changed(self, _txt: str) -> None:
         if self._restoring_options:
             return
         self._persist_options()
-        self._set_reload_pending(True, "slot")
+        self._schedule_auto_reload()
 
     def _on_perf_changed(self, _val: int) -> None:
         if self._restoring_options:
@@ -3636,6 +3704,7 @@ class TrajectoryViewer2Window(QMainWindow):
         if path:
             resolved = _resolve_existing_path(path) or Path(path)
             self.video_input.setText(str(resolved))
+            self._bg_frame_index = None
             self._ensure_base_matches_video(resolved)
             self._bg_enabled = True
             self.bg_toggle_btn.setText("배경 보임")
@@ -3670,8 +3739,33 @@ class TrajectoryViewer2Window(QMainWindow):
             self.scene.clear()
             return
         self._set_reload_pending(False)
+        self._sync_video_to_session()
         self._load_lines_from_path()
         self._render_scene()
+
+    def _sync_video_to_session(self) -> None:
+        """선택한 세션과 배경 영상이 다르면 같은 폴더의 세션 영상으로 바꾼다.
+
+        오전/오후 영상은 카메라 각도가 다를 수 있어, 다른 세션 영상의 첫 프레임 위에
+        궤적을 그리면 위치가 맞지 않아 보인다.
+        """
+        if self.session_combo.currentIndex() <= 0:
+            return
+        session_id = self.session_combo.currentText().strip()
+        current_text = self.video_input.text().strip()
+        current = _resolve_existing_path(current_text) if current_text else None
+        if current is None or _normalize_session_name(Path(current).stem) == _normalize_session_name(session_id):
+            return
+        matched = _matching_session_video(session_id, Path(current))
+        if matched is None:
+            return
+        self.video_input.setText(str(matched))
+        self._bg_frame_index = None
+        self._ensure_base_matches_video(matched)
+        self._close_video_cap()
+        self._sync_frame_slider()
+        self._persist_options()
+        self.status_label.setText(f"세션에 맞는 영상으로 배경을 바꿨습니다: {matched.name}")
 
     def _reset_filter_mode(self) -> None:
         self._apply_merge_filter = None
@@ -3853,10 +3947,11 @@ class TrajectoryViewer2Window(QMainWindow):
             return None
 
     @Slot(object)
-    def _on_tracks_batch_queued(self, batch: object) -> None:
-        token = self._sender_token()
-        if token is not None:
-            self._on_tracks_batch(batch, token)
+    def _on_tracks_batch_queued(self, payload: object) -> None:
+        # 작업 객체는 끝나자마자 지워져 sender() 로 토큰을 못 읽을 수 있다. 토큰은 데이터에 실어 받는다.
+        if isinstance(payload, tuple) and len(payload) == 2:
+            token, batch = payload
+            self._on_tracks_batch(batch, int(token))
 
     @Slot(str)
     def _on_worker_progress(self, msg: str) -> None:
@@ -3872,9 +3967,11 @@ class TrajectoryViewer2Window(QMainWindow):
 
     @Slot(object)
     def _on_tracks_finished_queued(self, meta: object) -> None:
-        token = self._sender_token()
+        token = meta.get("token") if isinstance(meta, dict) else None
+        if token is None:
+            token = self._sender_token()
         if token is not None:
-            self._on_tracks_finished(meta, token)
+            self._on_tracks_finished(meta, int(token))
 
     def _make_track_pens(self) -> List[QPen]:
         colors = ["#3e7dd1", "#d35f5f", "#4cbfa6", "#c4a000", "#ad7fa8", "#729fcf", "#e67e22", "#27ae60"]
@@ -3976,7 +4073,6 @@ class TrajectoryViewer2Window(QMainWindow):
             gitem = QGraphicsPathItem(path)
             gitem.setPen(pen)
             gitem.setZValue(1)
-            gitem.setCacheMode(QGraphicsPathItem.CacheMode.DeviceCoordinateCache)
             self.scene.addItem(gitem)
             self._track_items.append(gitem)
             self._track_items_meta.append((gitem, str(tid), pts, str(group or ""), str(cls_name or "")))
@@ -4021,7 +4117,7 @@ class TrajectoryViewer2Window(QMainWindow):
             self.scene.clear()
             return
         self._cancel_loader()
-        bg_item, bg_w, bg_h = _load_background(video_path, self.resize_target) if self._bg_enabled else (None, 0.0, 0.0)
+        bg_item, bg_w, bg_h = _load_background(video_path, self.resize_target, self._bg_frame_index) if self._bg_enabled else (None, 0.0, 0.0)
         self._bg_item = bg_item
         self._bg_size = (bg_w, bg_h)
         self.scene.clear()
@@ -4335,16 +4431,25 @@ class TrajectoryViewer2Window(QMainWindow):
 
     # ── 기능 6: 배경 프레임 탐색 ──
 
+    def _frame_label_text(self, frame_no: int) -> str:
+        fps = float(self._video_fps or 0.0)
+        if fps <= 0:
+            return f"프레임: {frame_no}"
+        sec = int(frame_no / fps)
+        return f"프레임: {frame_no} ({sec // 3600:02d}:{sec % 3600 // 60:02d}:{sec % 60:02d})"
+
     def _on_frame_slider_moved(self, frame_no: int) -> None:
         """슬라이더를 움직이는 동안엔 라벨만 갱신하고 디코딩은 미룬다."""
-        self.frame_slider_label.setText(f"프레임: {frame_no}")
+        self.frame_slider_label.setText(self._frame_label_text(frame_no))
         self._frame_seek_debounce.start()
 
     def _on_frame_slider_changed(self, frame_no: int) -> None:
         """해당 프레임을 실제로 읽어 배경에 표시한다 (디바운스 후 호출)."""
-        self.frame_slider_label.setText(f"프레임: {frame_no}")
+        self.frame_slider_label.setText(self._frame_label_text(frame_no))
         if self._video_cap is None:
             return
+        # 다시 그려도(세션 변경·새로고침) 고른 프레임이 배경으로 남게 기억한다.
+        self._bg_frame_index = int(frame_no)
         try:
             cap = self._video_cap
             cap.set(cv2.CAP_PROP_POS_FRAMES, float(frame_no))
@@ -4381,8 +4486,15 @@ class TrajectoryViewer2Window(QMainWindow):
                 return
             self._video_cap = cap
             self._video_total_frames = total
+            self._video_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
             self.frame_slider.setRange(0, max(0, total - 1))
-            self.frame_slider.setValue(0)
+            # 지금 배경 프레임에 맞춰 둔다(값만 옮기고 다시 디코딩하지는 않는다).
+            current = self._bg_frame_index if self._bg_frame_index is not None else _background_frame_index(cap)
+            current = max(0, min(int(current), total - 1))
+            self.frame_slider.blockSignals(True)
+            self.frame_slider.setValue(current)
+            self.frame_slider.blockSignals(False)
+            self.frame_slider_label.setText(self._frame_label_text(current))
             self.frame_slider.setEnabled(True)
             self._frame_slider_widget.show()
         except Exception:

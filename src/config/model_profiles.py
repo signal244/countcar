@@ -24,7 +24,7 @@ CUSTOM_EXCEL_MAPPING: Dict[str, str] = {
     "large_bus": "대형버스",
     "small_truck": "소형화물",
     "medium_truck": "중형화물",
-    "etc": "중형화물",
+    "etc": "대형화물",  # 탐지 시 category_mapping.json 과 같게
     "large_truck": "대형화물",
 }
 CUSTOM_EXCEL_COLUMNS: List[str] = ["승용차", "소형버스", "대형버스", "소형화물", "중형화물", "대형화물"]
@@ -190,6 +190,29 @@ def read_model_classes(model_path: str | Path) -> Dict[int, str]:
     return {}
 
 
+# 엑셀 열 기본 순서(왼쪽부터). 여기에 없는 열은 뒤에 붙는다.
+STANDARD_EXCEL_ORDER: List[str] = list(
+    dict.fromkeys([*CUSTOM_EXCEL_COLUMNS, *COCO_EXCEL_COLUMNS, *OPTIONAL_EXCEL_COLUMNS])
+)
+
+
+def default_excel_target(class_name: str) -> str:
+    """차종 하나의 기본 엑셀 열. 한글 열 이름은 그대로, 영문 클래스는 알려진 매핑, 없으면 ""."""
+    name = str(class_name or "").strip()
+    if name in KOREAN_PASSTHROUGH:
+        return name
+    lowered = name.lower()
+    return CUSTOM_EXCEL_MAPPING.get(lowered) or COCO_EXCEL_MAPPING.get(lowered) or ""
+
+
+def order_excel_columns(columns: List[str]) -> List[str]:
+    """열 목록을 기본 순서(승용차, 소형버스, 대형버스, 소형화물, 중형화물, 대형화물 …)로 정렬한다."""
+    unique = list(dict.fromkeys(c for c in columns if c))
+    rank = {c: i for i, c in enumerate(STANDARD_EXCEL_ORDER)}
+    known = sorted((c for c in unique if c in rank), key=rank.__getitem__)
+    return known + [c for c in unique if c not in rank]
+
+
 def suggest_excel_mapping(class_names: List[str]) -> Tuple[Dict[str, str], List[str]]:
     """클래스 이름을 보고 알려진 계열의 기본 엑셀 매핑을 제안한다.
 
@@ -336,10 +359,13 @@ class ModelProfileStore:
             kept_ids = [cid for cid in cached.detect_class_ids if cid in fresh.classes]
             if kept_ids:
                 fresh.detect_class_ids = kept_ids
-            kept_mapping = {k: v for k, v in cached.excel_mapping.items() if k in valid_names}
+            # DB 에 한글로 저장된 차종(승용차 등)의 설정도 모델 클래스가 아니라고 버리지 않는다.
+            kept_mapping = {
+                k: v for k, v in cached.excel_mapping.items() if k in valid_names or k in KOREAN_PASSTHROUGH
+            }
             if kept_mapping:
                 fresh.excel_mapping = kept_mapping
-                kept_columns = [c for c in cached.excel_columns if c in set(kept_mapping.values())]
+                kept_columns = [c for c in cached.excel_columns if c and c in set(kept_mapping.values())]
                 fresh.excel_columns = kept_columns or fresh.excel_columns
         self._profiles[key] = fresh
         self.save()

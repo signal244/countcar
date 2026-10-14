@@ -96,7 +96,7 @@ class LegacyTrajectoryTests(unittest.TestCase):
         for slot, expected in ((0, 1), (1, 0)):
             worker = _TrajectoryLoadWorker(self.db, "old", slot, 1, 0, 1)
             batches, errors, finished = [], [], []
-            worker.batch_ready.connect(batches.extend)
+            worker.batch_ready.connect(lambda payload: batches.extend(payload[1]))  # (token, 궤적 목록)
             worker.error.connect(errors.append)
             worker.finished.connect(finished.append)
             worker.run()

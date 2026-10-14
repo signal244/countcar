@@ -1254,7 +1254,7 @@ def run_count(
             "large_bus": "대형버스",
             "small_truck": "소형화물",
             "medium_truck": "중형화물",
-            "etc": "중형화물",
+            "etc": "대형화물",
             "large_truck": "대형화물",
             # Some older DBs already store mapped Korean class names.
             "승용차": "승용차",
@@ -1290,6 +1290,10 @@ def run_count(
 
         if class_mapping:
             # UI/설정에서 지정한 매핑을 그대로 사용한다(모델 프로파일 기준).
+            # 값이 빈 차종은 집계 차종 설정에서 '(제외)'로 고른 것이라 집계에서 뺀다.
+            excluded = {str(k).strip().lower() for k, v in class_mapping.items() if not str(v).strip()}
+            if excluded:
+                df = df[~raw_cls_norm.isin(excluded)].copy()
             cls_map = {str(k).strip(): str(v).strip() for k, v in class_mapping.items() if str(v).strip()}
             # 소문자 키도 함께 넣어 대소문자 차이로 누락되지 않게 한다.
             cls_map.update({k.lower(): v for k, v in list(cls_map.items())})
