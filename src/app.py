@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
@@ -74,6 +74,7 @@ from src.ui.trajectory_viewer2 import TrajectoryViewer2Window
 logger = logging.getLogger(__name__)
 
 UI_SCALE = 1.35
+UI_FONT_PT = 10.0  # GUI 전체 글자 크기(pt)
 
 # 화면 표시 이름 -> 추적 설정. 기본은 ReID 끔(2026-10 GPU A/B: 정확도 차이 없이 19% 빠름).
 # ReID 를 켜면 CPU(OpenVINO) 모드에서는 effective_tracker 가 botsort_cpu.yaml(전용 ReID 모델)로 바꾼다.
@@ -108,6 +109,8 @@ class MainWindow(QMainWindow):
         self.line_settings_path = self._resolve_initial_line_settings_path()
         self._build_ui()
         self._apply_style()
+        self._align_section_columns()
+        self._restore_window_geometry()
         self._update_detect_classes_label()
         self._update_runtime_label()
 
@@ -234,9 +237,10 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(10)
 
         main_layout.addWidget(self._header())
-        main_layout.addWidget(self._session_video_box())
-        main_layout.addWidget(self._settings_box())
-        main_layout.addWidget(self._count_box())
+        section_boxes = [self._session_video_box(), self._settings_box(), self._count_box()]
+        for section in section_boxes:
+            main_layout.addWidget(section)
+        self._section_grids = [section.layout() for section in section_boxes]
         # Initialize suggested DB paths once related widgets are available.
         try:
             self._maybe_update_count_db_path_from_junction()
@@ -256,6 +260,78 @@ class MainWindow(QMainWindow):
             "countLinesBrowseButton": "교차 여부와 방향 판정에 사용할 분석라인 JSON을 선택합니다. 분석 영상에 맞는 라인 파일을 사용하세요.",
         })
 
+    @staticmethod
+    def _hbox(*widgets: QWidget, equal: bool = False) -> QHBoxLayout:
+        """가로 한 줄. 기본은 첫 위젯(입력칸)만 늘리고, equal 이면 모두 같은 폭."""
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        for i, widget in enumerate(widgets):
+            row.addWidget(widget, stretch=1 if equal or i == 0 else 0)
+        return row
+
+    def _align_section_columns(self) -> None:
+        """교차로·영상 / 분석 설정 / 카운팅 설정의 칸 경계를 같은 위치로 맞춘다.
+
+        세 섹션 모두 이름(0,2,4)·값(1,3,5)·오른쪽 버튼(6) 7칸이다. 칸마다 세 섹션 중
+        가장 넓은 내용의 폭을 최소 폭으로 함께 주고 값 칸만 같은 비율로 늘린다.
+        스타일(여백)이 적용된 뒤에 불러야 폭이 맞는다.
+        """
+        grids = [g for g in getattr(self, "_section_grids", []) if isinstance(g, QGridLayout)]
+        value_cols = (1, 3, 5)
+        # 콤보박스는 가장 긴 항목 길이만큼 넓어지려 해서 칸 폭이 섹션마다 달라진다.
+        for grid in grids:
+            parent = grid.parentWidget()
+            for combo in parent.findChildren(QComboBox) if parent is not None else []:
+                combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+                combo.setMinimumContentsLength(6)
+        widths = [0] * 7
+        for grid in grids:
+            for i in range(grid.count()):
+                _r, col, _rs, span = grid.getItemPosition(i)
+                item = grid.itemAt(i)
+                if col in value_cols:
+                    # 값 칸 내용은 선호 폭을 고집하지 않고 칸 폭을 따르게 한다(그래야 세 섹션 폭이 같다).
+                    for widget in self._layout_widgets(item):
+                        policy = widget.sizePolicy()
+                        policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+                        widget.setSizePolicy(policy)
+                if span == 1 and col < 7:
+                    hint = item.minimumSize() if col in value_cols else item.sizeHint()
+                    widths[col] = max(widths[col], hint.width())
+        for grid in grids:
+            grid.setHorizontalSpacing(12)
+            for col, width in enumerate(widths):
+                grid.setColumnMinimumWidth(col, width)
+                grid.setColumnStretch(col, 1 if col in value_cols else 0)
+
+    @staticmethod
+    def _layout_widgets(item) -> list:
+        """레이아웃 항목의 입력 위젯들(가로 줄이면 늘어나는 첫 위젯만)."""
+        if item.widget() is not None:
+            return [item.widget()]
+        layout = item.layout()
+        if layout is None or layout.count() == 0:
+            return []
+        first = layout.itemAt(0).widget()
+        return [first] if first is not None else []
+
+    def _restore_window_geometry(self) -> None:
+        """저장된 창 크기·위치로 연다. 없거나 읽지 못하면 화면에 맞춘 기본 크기를 쓴다."""
+        saved = str(self.cfg_defaults.get("window_geometry") or "").strip()
+        if not saved:
+            return
+        try:
+            self.restoreGeometry(QByteArray.fromBase64(saved.encode("ascii")))
+        except Exception:
+            logger.debug("창 크기 복원 실패", exc_info=True)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not getattr(self, "_columns_aligned_on_show", False):
+            # 글꼴·스타일이 모두 적용된 첫 표시 때 한 번 더 맞춘다.
+            self._columns_aligned_on_show = True
+            self._align_section_columns()
+
     def _header(self) -> QWidget:
         self.stepper = WorkflowStepper(
             ["설정", "Colab", "궤적 DB", "카운팅", "결과"],
@@ -267,7 +343,7 @@ class MainWindow(QMainWindow):
         box.setObjectName("groupTeal")
         layout = QGridLayout()
         layout.setVerticalSpacing(6)
-        layout.setHorizontalSpacing(10)
+        layout.setHorizontalSpacing(12)
 
         # Recover junction/session defaults from legacy session_id when needed.
         junction_default = str(self.cfg_defaults.get("junction_name") or "").strip()
@@ -309,12 +385,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._cap("세션명"), 0, 2)
         layout.addWidget(self.session_input, 0, 3)
         layout.addWidget(self._cap("영상"), 0, 4)
-        layout.addWidget(video_edit, 0, 5)
-        layout.addWidget(browse_btn, 0, 6)
-        # Give long text fields more width than labels and buttons.
-        layout.setColumnStretch(1, 2)
-        layout.setColumnStretch(3, 4)
-        layout.setColumnStretch(5, 6)
+        layout.addLayout(self._hbox(video_edit, browse_btn), 0, 5, 1, 2)
+        # 마지막 칸에 자기 위젯이 없으면 Qt 가 그 칸 간격을 빼서 다른 섹션과 칸이 어긋난다.
+        spacer = QWidget()
+        spacer.setFixedSize(0, 0)
+        layout.addWidget(spacer, 0, 6)
 
         box.setLayout(layout)
         try:
@@ -483,7 +558,6 @@ class MainWindow(QMainWindow):
         self.model_combo.set_path(self.cfg_defaults.get("model_path", ""))
         self.model_combo.currentIndexChanged.connect(self._on_model_selection_changed)
         model_classes_btn = QPushButton("탐지 차종 선택")
-        model_classes_btn.setFixedWidth(160)
         model_classes_btn.clicked.connect(self.on_select_detect_classes)
         self.detect_classes_label = QLabel("")
         self.detect_classes_label.setWordWrap(True)
@@ -492,7 +566,6 @@ class MainWindow(QMainWindow):
         self.db_path_input = QLineEdit(self.cfg_defaults.get("db_path", "output/tracks.sqlite"))
         db_path_btn = QPushButton("경로 설정")
         db_path_btn.setObjectName("detectDbBrowseButton")
-        db_path_btn.setFixedWidth(160)
         db_path_btn.clicked.connect(self._choose_detect_db)
         try:
             self.db_path_input.editingFinished.connect(lambda: setattr(self, "_detect_db_user_set", True))
@@ -555,7 +628,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.db_path_input, row, 1, 1, 4)
         layout.addWidget(db_path_btn, row, 5)
 
-        # 오른쪽 빈 칸: 실행 버튼을 두 칸씩, 그 아래 모델/DB/GPU 상태를 세로로 둔다.
+        # 오른쪽 빈 칸: 실행 버튼을 두 칸씩, 그 아래 모델/DB/GPU 상태와 설정 저장을 세로로 둔다.
         self.status_bar = StatusBar(vertical=True)
         self.status_bar.add_item("model", "모델: –", "off")
         self.status_bar.add_item("db", "DB: –", "off")
@@ -568,10 +641,14 @@ class MainWindow(QMainWindow):
         buttons = self._tool_buttons()
         for i, btn in enumerate(buttons):
             tools.addWidget(btn, i // 2, i % 2)
-        tools.addWidget(self.status_bar, (len(buttons) + 1) // 2, 0, 1, 2)
-        tools.setRowStretch((len(buttons) + 1) // 2 + 1, 1)
+        save_btn = QPushButton("💾 설정 저장")
+        save_btn.setToolTip("지금 화면의 설정을 저장해 다음에 프로그램을 켤 때 그대로 불러옵니다. 탐지는 하지 않습니다.")
+        save_btn.clicked.connect(self._save_config)
+        next_row = (len(buttons) + 1) // 2
+        tools.addWidget(self.status_bar, next_row, 0, 1, 2)
+        tools.addWidget(save_btn, next_row + 1, 0, 1, 2)
+        tools.setRowStretch(next_row + 2, 1)
         layout.addLayout(tools, 0, 6, row + 1, 1)
-        layout.setColumnStretch(7, 1)
 
         box.setLayout(layout)
         return box
@@ -594,7 +671,6 @@ class MainWindow(QMainWindow):
         # Output dir for Excel results
         self.count_output_dir_input = QLineEdit(self.cfg_defaults.get("count_output_dir", ""))
         out_dir_btn = QPushButton("폴더 선택")
-        out_dir_btn.setFixedWidth(120)
         out_dir_btn.clicked.connect(self._choose_count_output_dir)
 
         self.count_lines_input = QLineEdit(self.cfg_defaults.get("count_lines_path", "config/lines.json"))
@@ -607,10 +683,8 @@ class MainWindow(QMainWindow):
         self.count_session_combo = QComboBox()
         self.count_session_combo.addItem("(전체)")
         self.count_session_refresh_btn = QPushButton("목록 갱신")
-        self.count_session_refresh_btn.setFixedWidth(120)
         self.count_session_refresh_btn.clicked.connect(self._refresh_db_sessions)
         self.count_session_delete_btn = QPushButton("세션 삭제")
-        self.count_session_delete_btn.setFixedWidth(120)
         self.count_session_delete_btn.clicked.connect(self._delete_selected_session)
         try:
             self.count_db_input.editingFinished.connect(self._refresh_db_sessions)
@@ -622,7 +696,6 @@ class MainWindow(QMainWindow):
         self.count_interval_combo = QComboBox()
         for m in ["5", "15", "30", "60"]:
             self.count_interval_combo.addItem(m)
-        self.count_interval_combo.setFixedWidth(140)
         default_interval = str(int(self.cfg_defaults.get("count_interval_minutes", 15)))
         if default_interval in [self.count_interval_combo.itemText(i) for i in range(self.count_interval_combo.count())]:
             self.count_interval_combo.setCurrentText(default_interval)
@@ -631,7 +704,6 @@ class MainWindow(QMainWindow):
         self.count_analysis_basis_combo.addItem("후처리 기준 분석", "postprocess")
         self.count_analysis_basis_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.count_classes_btn = QPushButton("집계 차종 설정")
-        self.count_classes_btn.setFixedWidth(150)
         self.count_classes_btn.clicked.connect(self.on_select_count_classes)
         default_basis = str(self.cfg_defaults.get("count_analysis_basis", "postprocess") or "postprocess").strip().lower()
         if default_basis not in ("original", "postprocess"):
@@ -639,39 +711,27 @@ class MainWindow(QMainWindow):
         idx_basis = self.count_analysis_basis_combo.findData(default_basis)
         if idx_basis >= 0:
             self.count_analysis_basis_combo.setCurrentIndex(idx_basis)
+        # 분석 설정과 같은 칸 구성: 이름(0) 값(1) 이름(2) 값(3) 이름(4) 값(5) 오른쪽 버튼(6).
         row = 0
-        # Row 1: DB path and session controls.
         layout.addWidget(self._cap("DB 경로"), row, 0)
-        layout.addWidget(self.count_db_input, row, 1, 1, 3)
-        layout.addWidget(db_btn, row, 4)
-        layout.addWidget(self._cap("세션"), row, 5)
-        layout.addWidget(self.count_session_combo, row, 6)
-        layout.addWidget(self.count_session_refresh_btn, row, 7)
-        layout.addWidget(self.count_session_delete_btn, row, 8)
+        layout.addLayout(self._hbox(self.count_db_input, db_btn), row, 1, 1, 3)
+        layout.addWidget(self._cap("세션"), row, 4)
+        layout.addWidget(self.count_session_combo, row, 5)
+        layout.addLayout(self._hbox(self.count_session_refresh_btn, self.count_session_delete_btn, equal=True), row, 6)
 
         row += 1
-        # Row 2: line file and output folder.
         layout.addWidget(self._cap("분석라인"), row, 0)
-        layout.addWidget(self.count_lines_input, row, 1, 1, 3)
-        layout.addWidget(lines_btn, row, 4)
-        layout.addWidget(self._cap("결과 폴더"), row, 5)
-        layout.addWidget(self.count_output_dir_input, row, 6, 1, 2)
-        layout.addWidget(out_dir_btn, row, 8)
+        layout.addLayout(self._hbox(self.count_lines_input, lines_btn), row, 1, 1, 3)
+        layout.addWidget(self._cap("결과 폴더"), row, 4)
+        layout.addWidget(self.count_output_dir_input, row, 5)
+        layout.addWidget(out_dir_btn, row, 6)
 
         row += 1
-        # Row 3: interval and analysis basis.
         layout.addWidget(self._cap("슬롯(분)"), row, 0)
         layout.addWidget(self.count_interval_combo, row, 1)
         layout.addWidget(self._cap("분석기준"), row, 2)
-        layout.addWidget(self.count_analysis_basis_combo, row, 3, 1, 5)
-        layout.addWidget(self.count_classes_btn, row, 8)
-
-        # Stretch input columns more than fixed-size button columns.
-        layout.setColumnStretch(1, 2)
-        layout.setColumnStretch(2, 1)
-        layout.setColumnStretch(3, 8)
-        layout.setColumnStretch(6, 10)
-        layout.setColumnStretch(7, 10)
+        layout.addWidget(self.count_analysis_basis_combo, row, 3, 1, 3)
+        layout.addWidget(self.count_classes_btn, row, 6)
         box.setLayout(layout)
         return box
 
@@ -679,13 +739,6 @@ class MainWindow(QMainWindow):
         colab_btn = QPushButton("📋 Colab 코드 생성")
         colab_btn.setProperty("btnType", "secondary")
         colab_btn.clicked.connect(self.on_export_colab)
-
-        save_btn = QPushButton("💾 설정 저장")
-        save_btn.setToolTip("지금 화면의 설정을 저장해 다음에 프로그램을 켤 때 그대로 불러옵니다. 탐지는 하지 않습니다.")
-        save_btn.clicked.connect(self._save_config)
-
-        preview_vehicle_btn = QPushButton("🔍 차종 미리보기")
-        preview_vehicle_btn.clicked.connect(self.on_preview_vehicle)
 
         traj_btn = QPushButton("👁 궤적보기/수정")
         traj_btn.setProperty("btnType", "secondary")
@@ -698,7 +751,7 @@ class MainWindow(QMainWindow):
         approach_btn = QPushButton("📐 접근로 카운팅")
         approach_btn.setProperty("btnType", "secondary")
         approach_btn.clicked.connect(self.on_count_approach)
-        return [colab_btn, save_btn, preview_vehicle_btn, traj_btn, count_btn, approach_btn]
+        return [colab_btn, traj_btn, count_btn, approach_btn]
 
     def _buttons_row(self) -> QVBoxLayout:
         outer = QVBoxLayout()
@@ -707,6 +760,8 @@ class MainWindow(QMainWindow):
         # ── 로컬실행 그룹 (반투명) ──
         local_box = QGroupBox("🖥️ 영상분석 및 궤적저장 (로컬실행)")
         local_box.setObjectName("groupGray")
+        # 버튼이 많아 한 줄에 들어가도록 이 박스 안 버튼 좌우 여백만 줄인다.
+        local_box.setStyleSheet("QPushButton { padding: 3px 8px; }")
         opacity = QGraphicsOpacityEffect()
         opacity.setOpacity(0.75)
         local_box.setGraphicsEffect(opacity)
@@ -724,20 +779,25 @@ class MainWindow(QMainWindow):
         extract_btn = QPushButton("🖼 Extract Images + Labels")
         extract_btn.clicked.connect(self.on_extract_images)
 
+        preview_vehicle_btn = QPushButton("🔍 차종 미리보기")
+        preview_vehicle_btn.clicked.connect(self.on_preview_vehicle)
+
         # 이 PC 의 GPU 상태에 맞는 권장 실행 방식(_update_status_bar 가 채운다).
         self.gpu_hint_label = QLabel("")
+        self.gpu_hint_label.setWordWrap(True)
 
         local_row = QHBoxLayout()
         local_row.addWidget(detect_btn)
         local_row.addWidget(batch_btn)
         local_row.addWidget(extract_btn)
+        local_row.addWidget(preview_vehicle_btn)
         quit_btn = QPushButton("종료")
         quit_btn.setProperty("btnType", "danger")
         quit_btn.setFixedWidth(80)
         quit_btn.clicked.connect(self.on_quit_program)
 
-        local_row.addWidget(self.gpu_hint_label)
-        local_row.addStretch()
+        # 줄바꿈 라벨은 가장 좁게 잡히므로 남는 폭을 라벨에 줘서 공간이 있으면 한 줄로 보이게 한다.
+        local_row.addWidget(self.gpu_hint_label, stretch=1)
         local_row.addWidget(quit_btn)
         local_box.setLayout(local_row)
         outer.addWidget(local_box)
@@ -1583,6 +1643,8 @@ class MainWindow(QMainWindow):
             state = load_app_config(self.state_path) if self.state_path.exists() else {}
             state.update(self._build_overrides())
             state.update(self._build_count_overrides())
+            # 창 크기·위치도 저장해 다음 실행 때 그대로 연다.
+            state["window_geometry"] = bytes(self.saveGeometry().toBase64()).decode("ascii")
             save_user_state(self.state_path, state)
             if self.log_view:
                 self.log_view.append(f"사용자 설정을 저장했습니다: {self.state_path}")
@@ -1756,13 +1818,10 @@ class MainWindow(QMainWindow):
 def main() -> None:
     app = QApplication(sys.argv)
 
-    # Slightly increase the base font size for desktop readability.
+    # GUI 전체 글자 크기를 고정한다.
     try:
         base = app.font()
-        pt = float(base.pointSizeF() if base.pointSizeF() > 0 else base.pointSize())
-        if pt <= 0:
-            pt = 10.0
-        base.setPointSizeF(pt * UI_SCALE)
+        base.setPointSizeF(UI_FONT_PT)
         app.setFont(base)
     except Exception:
         logger.debug("Suppressed error", exc_info=True)

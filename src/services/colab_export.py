@@ -100,6 +100,7 @@ def build_colab_config(
     """GUI 설정을 Colab용 설정 dict로 변환한다."""
     exported: Dict[str, object] = dict(cfg)
     exported.pop("root_dir", None)
+    exported.pop("window_geometry", None)  # 로컬 GUI 창 크기 — Colab 과 무관
     # Colab 은 GPU 로 .pt 를 돌린다. 로컬에서 CPU(OpenVINO) 모드였어도 원본 모델로 되돌린다.
     exported["runtime_mode"] = "gpu"
     if exported.get("model_path"):
