@@ -88,7 +88,8 @@ def run_colab_batch(jobs: List[BatchJob], *, root: Path, work_dir: Path = Path("
                 local_db.unlink()
             if drive_db.exists():
                 copy_file(drive_db, local_db, remount=remount)
-            for job in group:
+            kept_video: Optional[Path] = None   # 이번 실행에서 다음 작업용으로 남겨 둔 영상 복사본
+            for idx, job in enumerate(group):
                 done_n += 1
                 tag = f"[{done_n}/{total}]"
                 state = session_state(local_db, job.session_id)
@@ -98,8 +99,15 @@ def run_colab_batch(jobs: List[BatchJob], *, root: Path, work_dir: Path = Path("
                     results.append(JobResult(job, "skipped", drive_db, reason))
                     continue
                 local_video = local_video_dir / Path(job.video).name
-                print(f"{tag} 영상 복사: {Path(job.video).name}", flush=True)
-                copy_file(Path(job.video), local_video, remount=remount)
+                if kept_video == local_video and local_video.is_file():
+                    # 같은 영상을 다른 모델로 이어서 돌리는 경우: 앞 작업이 남겨 둔 복사본을 그대로 쓴다.
+                    print(f"{tag} 영상 재사용: {Path(job.video).name}", flush=True)
+                else:
+                    print(f"{tag} 영상 복사: {Path(job.video).name}", flush=True)
+                    copy_file(Path(job.video), local_video, remount=remount)
+                # 다음 작업이 같은 영상이면 지우지 않는다(모델별 비교). 마지막에는 항상 지운다.
+                keep_video = any(Path(j.video) == Path(job.video) for j in group[idx + 1:])
+                kept_video = local_video if keep_video else None
                 timers = {"ckpt": time.time(), "hb": time.time()}
 
                 def progress(_i: int, msg: str, tag: str = tag) -> None:
@@ -125,7 +133,8 @@ def run_colab_batch(jobs: List[BatchJob], *, root: Path, work_dir: Path = Path("
                                     base_overrides=base_overrides, db_dir=local_db_dir, existing=existing,
                                     progress_cb=progress, status_cb=status, service=service)
                 finally:
-                    local_video.unlink(missing_ok=True)
+                    if not keep_video:
+                        local_video.unlink(missing_ok=True)
                     _free_gpu_memory()
                 if backup_sqlite(local_db, drive_db):
                     print(f"{tag} Drive 에 저장: {drive_db.name}", flush=True)

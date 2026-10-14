@@ -34,7 +34,9 @@ if not exist "%UV%" (
 
 echo.
 echo [1/4] Python 3.10 준비...
-"%UV%" python install 3.10 || goto :fail
+rem --no-bin/--no-registry: 사용자 폴더(.local\bin)와 레지스트리에 python 을 등록하지 않는다.
+rem (이미 다른 python3.10.exe 가 있는 PC 에서 경고가 나고, 시스템 Python 과 섞일 수 있다)
+"%UV%" python install 3.10 --no-bin --no-registry || goto :fail
 
 echo.
 echo [2/4] 가상환경 만들기 (.venv)...

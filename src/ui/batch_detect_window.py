@@ -51,6 +51,9 @@ HEADERS = ["영상", "교차로명", "세션명", "저장 DB (자동)", "모델"
 CURRENT = "(현재 설정)"
 IMGSZ_CHOICES = [CURRENT, "auto", "640", "960", "1280", "1920"]
 VIDEO_FILTER = "영상 (*.mp4 *.avi *.mkv *.mov *.m4v *.ts);;모든 파일 (*)"
+# 세션 칸에 기억해 두는 값: 모델 이름을 붙이기 전 세션명, 마지막으로 자동으로 붙인 세션명.
+ROLE_BASE_SESSION = Qt.ItemDataRole.UserRole
+ROLE_AUTO_SESSION = Qt.ItemDataRole.UserRole + 1
 STATUS_TEXT = {"running": "▶ 진행 중", "done": "✔ 완료", "skipped": "건너뜀", "failed": "✖ 실패", "stopped": "■ 중지"}
 
 
@@ -118,18 +121,23 @@ class BatchDetectWindow(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(
             "영상 이름은 <교차로명>_<세션명> (예: 경원교차로_오전첨두.mp4). 교차로마다 DB 하나, 영상마다 세션 하나로 저장합니다.\n"
-            "분석라인 없이 화면 전체를 탐지합니다. 모델·이미지 크기는 기본으로 메인 창 설정을 따르며 영상별로 바꿀 수 있습니다."))
+            "분석라인 없이 화면 전체를 탐지합니다. 모델·이미지 크기는 기본으로 메인 창 설정을 따르며 영상별로 바꿀 수 있습니다.\n"
+            "같은 영상을 여러 모델로 돌리려면 [선택 행 복제] 후 모델을 바꾸세요. 세션명 뒤에 모델 이름이 붙어 따로 저장됩니다."))
 
         tools = QHBoxLayout()
         self.add_btn = QPushButton("영상 추가…")
         self.add_btn.clicked.connect(self.on_add)
         self.remove_btn = QPushButton("선택 제거")
         self.remove_btn.clicked.connect(self.on_remove)
+        self.copy_btn = QPushButton("선택 행 복제")
+        self.copy_btn.setToolTip("선택한 영상을 한 줄 더 추가합니다. 같은 영상을 다른 모델로 분석할 때 씁니다.\n"
+                                 "복제한 줄의 모델을 바꾸면 세션명 뒤에 모델 이름이 자동으로 붙습니다(예: 오전첨두_yolo8m_v1).")
+        self.copy_btn.clicked.connect(self.on_duplicate)
         self.up_btn = QPushButton("▲ 위로")
         self.up_btn.clicked.connect(lambda: self.on_move(-1))
         self.down_btn = QPushButton("▼ 아래로")
         self.down_btn.clicked.connect(lambda: self.on_move(1))
-        for b in (self.add_btn, self.remove_btn, self.up_btn, self.down_btn):
+        for b in (self.add_btn, self.remove_btn, self.copy_btn, self.up_btn, self.down_btn):
             tools.addWidget(b)
         tools.addStretch()
         self.export_btn = QPushButton("Colab용 내보내기")
@@ -176,7 +184,7 @@ class BatchDetectWindow(QDialog):
         self._set_running(False)
 
     def _set_running(self, running: bool) -> None:
-        for w in (self.add_btn, self.remove_btn, self.up_btn, self.down_btn, self.start_btn, self.export_btn):
+        for w in (self.add_btn, self.remove_btn, self.copy_btn, self.up_btn, self.down_btn, self.start_btn, self.export_btn):
             w.setEnabled(not running)
         self.after_btn.setEnabled(running)
         self.stop_btn.setEnabled(running)
@@ -214,12 +222,17 @@ class BatchDetectWindow(QDialog):
         item.setToolTip(str(video))
         self.table.setItem(row, COL_VIDEO, item)
         self.table.setItem(row, COL_JUNCTION, QTableWidgetItem(junction))
-        self.table.setItem(row, COL_SESSION, QTableWidgetItem(session))
+        session_item = QTableWidgetItem(session)
+        session_item.setData(ROLE_BASE_SESSION, session)
+        session_item.setData(ROLE_AUTO_SESSION, session)
+        self.table.setItem(row, COL_SESSION, session_item)
         for col in (COL_DB, COL_STATUS):
             cell = QTableWidgetItem("")
             cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(row, col, cell)
-        self.table.setCellWidget(row, COL_MODEL, self._model_combo())
+        model_combo = self._model_combo()
+        model_combo.currentIndexChanged.connect(lambda _i, combo=model_combo: self._on_model_changed(combo))
+        self.table.setCellWidget(row, COL_MODEL, model_combo)
         self.table.setCellWidget(row, COL_IMGSZ, self._imgsz_combo())
         self.table.blockSignals(False)
         self._refresh_row(row)
@@ -262,6 +275,55 @@ class BatchDetectWindow(QDialog):
             if str(Path(p)) not in existing:
                 self.add_video(Path(p))
 
+    def _video_of(self, row: int) -> str:
+        return str(self.table.item(row, COL_VIDEO).data(Qt.ItemDataRole.UserRole))
+
+    def _on_model_changed(self, combo: QComboBox) -> None:
+        """같은 영상이 여러 줄이면, 모델을 바꾼 줄의 세션명 뒤에 모델 이름을 붙여 세션이 겹치지 않게 한다.
+
+        사용자가 세션명을 직접 고친 줄은 건드리지 않는다.
+        """
+        row = next((r for r in range(self.table.rowCount()) if self.table.cellWidget(r, COL_MODEL) is combo), -1)
+        if row < 0:
+            return
+        video = self._video_of(row)
+        if sum(1 for r in range(self.table.rowCount()) if self._video_of(r) == video) < 2:
+            return
+        item = self.table.item(row, COL_SESSION)
+        base = str(item.data(ROLE_BASE_SESSION) or "")
+        last_auto = str(item.data(ROLE_AUTO_SESSION) or "")
+        if item.text().strip() not in (base, last_auto):
+            return
+        model = combo.currentData() or ""
+        new_text = f"{base}_{Path(model).stem}" if model and base else base
+        self.table.blockSignals(True)
+        item.setText(new_text)
+        item.setData(ROLE_AUTO_SESSION, new_text)
+        self.table.blockSignals(False)
+        self._refresh_row(row)
+
+    def on_duplicate(self) -> None:
+        """선택한 줄을 바로 아래에 복제한다(같은 영상을 다른 모델로 돌릴 때)."""
+        rows = sorted({i.row() for i in self.table.selectedIndexes()})
+        if not rows:
+            QMessageBox.information(self, "선택 없음", "복제할 영상 줄을 먼저 선택하세요.")
+            return
+        snaps = []
+        for r in range(self.table.rowCount()):
+            snaps.append(self._row_snapshot(r))
+            if r in rows:
+                copy = dict(self._row_snapshot(r))
+                # 복제본은 모델 이름이 붙기 전 세션명에서 시작한다.
+                copy["session"] = copy["base_session"]
+                copy["auto_session"] = copy["base_session"]
+                copy["model"] = 0
+                snaps.append(copy)
+        self.table.setRowCount(0)
+        for snap in snaps:
+            self._restore_row(snap)
+        self.log_view.appendPlainText(
+            f"[복제] {len(rows)}줄을 복제했습니다. 복제한 줄의 모델을 바꾸면 세션명 뒤에 모델 이름이 붙습니다.")
+
     def on_remove(self) -> None:
         for row in sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True):
             self.table.removeRow(row)
@@ -285,6 +347,8 @@ class BatchDetectWindow(QDialog):
             "video": Path(self.table.item(row, COL_VIDEO).data(Qt.ItemDataRole.UserRole)),
             "junction": self._text(row, COL_JUNCTION),
             "session": self._text(row, COL_SESSION),
+            "base_session": str(self.table.item(row, COL_SESSION).data(ROLE_BASE_SESSION) or self._text(row, COL_SESSION)),
+            "auto_session": str(self.table.item(row, COL_SESSION).data(ROLE_AUTO_SESSION) or ""),
             "model": self.table.cellWidget(row, COL_MODEL).currentIndex(),
             "imgsz": self.table.cellWidget(row, COL_IMGSZ).currentIndex(),
         }
@@ -294,9 +358,15 @@ class BatchDetectWindow(QDialog):
         row = self.table.rowCount() - 1
         self.table.blockSignals(True)
         self.table.item(row, COL_JUNCTION).setText(snap["junction"])
-        self.table.item(row, COL_SESSION).setText(snap["session"])
+        session_item = self.table.item(row, COL_SESSION)
+        session_item.setText(snap["session"])
+        session_item.setData(ROLE_BASE_SESSION, snap.get("base_session", snap["session"]))
+        session_item.setData(ROLE_AUTO_SESSION, snap.get("auto_session", snap["session"]))
         self.table.blockSignals(False)
-        self.table.cellWidget(row, COL_MODEL).setCurrentIndex(snap["model"])
+        model_combo = self.table.cellWidget(row, COL_MODEL)
+        model_combo.blockSignals(True)   # 복원할 때는 세션명을 다시 바꾸지 않는다
+        model_combo.setCurrentIndex(snap["model"])
+        model_combo.blockSignals(False)
         self.table.cellWidget(row, COL_IMGSZ).setCurrentIndex(snap["imgsz"])
         self._refresh_row(row)
 
