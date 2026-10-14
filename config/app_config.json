@@ -24,7 +24,6 @@
   "session_id": "",
   "head_seconds": 1.0,
   "tail_seconds": 1.0,
-  "yolo_version": "v11",
   "count_db_path": "output/tracks.sqlite",
   "count_db_dir": "output/db_snapshots",
   "count_lines_path": "config/lines/line_settings.sample.json",

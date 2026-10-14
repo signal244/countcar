@@ -44,7 +44,7 @@ from src.pipeline.image_extractor import (
     extract_frames,
     next_start_index,
 )
-from src.config.runtime import effective_tracker, plan_runtime
+from src.config.runtime import effective_tracker, gpu_info, plan_runtime
 from src.pipeline.track_merge import merge_params_from_config
 from src.services.colab_export import (
     build_colab_cell,
@@ -425,11 +425,6 @@ class MainWindow(QMainWindow):
         self.tail_input.setRange(0.0, 10.0)
         self.tail_input.setValue(float(self.cfg_defaults.get("tail_seconds", 1.0)))
 
-        # YOLO version display
-        self.yolo_combo = QComboBox()
-        self.yolo_combo.addItems(["v8", "v11"])
-        self.yolo_combo.setCurrentText(str(self.cfg_defaults.get("yolo_version", "v8")))
-
         # YOLO imgsz (list)
         self.imgsz_combo = QComboBox()
         for s in ["auto", "640", "960", "1280", "1920"]:
@@ -528,8 +523,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.head_input, row, 3)
         layout.addWidget(self._cap("Tail"), row, 4)
         layout.addWidget(self.tail_input, row, 5)
-        layout.addWidget(self._cap("YOLO 버전"), row, 6)
-        layout.addWidget(self.yolo_combo, row, 7)
 
         row += 1
         layout.addWidget(self._cap("표시 크기(imgsz)"), row, 0)
@@ -1143,10 +1136,28 @@ class MainWindow(QMainWindow):
         effective = Path(effective_tracker(plan, selected, str(self.cfg_defaults.get("cpu_tracker_config") or ""))).as_posix()
         tracker = TRACKER_LABELS.get(effective, Path(effective).stem)
         fp16 = getattr(self, "precision_combo", None) is not None and self.precision_combo.currentData() == "fp16"
-        text = f"→ {plan.label}" + (" · FP16" if fp16 and plan.mode == "gpu" and not plan.openvino else "") + f" · 추적 {tracker}"
-        if plan.warning:
-            text += f"\n⚠ {plan.warning}"
+        gpu_name, gpu_mem = gpu_info()
+
+        # 모델·추적은 바로 위 칸에 보이므로 여기서는 "어디서, 얼마나 빨리 도는지"만 한 줄로 보인다.
+        slow = False
+        if plan.mode == "gpu":
+            text = f"GPU ({gpu_name or plan.device})" + (" · FP16" if fp16 else "")
+        elif plan.openvino:
+            kind = "INT8" if Path(plan.model_path).name.endswith("_int8_openvino_model") else "FP32"
+            text = f"CPU · 변환 모델({kind})"
+        else:
+            slow = True
+            reason = f"GPU 메모리 부족({gpu_mem:.0f}GB)" if gpu_name else "GPU 없음"
+            text = f"⚠ {reason} → CPU 실행 (매우 느림)"
+        tip = [f"실제 실행: {plan.label}" + (" · FP16" if fp16 and plan.mode == "gpu" else ""), f"추적: {tracker}"]
+        if slow:
+            tip.append("NVIDIA GPU 를 찾지 못했거나(또는 GPU 용 PyTorch 가 설치되지 않음) 메모리가 4GB 미만이라 "
+                       "CPU 로 돕니다. 2시간 영상이면 몇 시간 이상 걸릴 수 있어 GPU PC 나 Colab 사용을 권장합니다.")
+        elif plan.warning:
+            tip.append(plan.warning)
         self.runtime_label.setText(text)
+        self.runtime_label.setToolTip("\n".join(tip))
+        self.runtime_label.setStyleSheet("color: #f59e0b; font-weight: 600;" if slow else "")
 
     def _update_detect_classes_label(self) -> None:
         """'탐지 차종' 줄에 현재 선택 상태를 요약해 보여준다."""
@@ -1474,7 +1485,6 @@ class MainWindow(QMainWindow):
             "allowed_classes": self._detect_class_ids(),
             "db_path": self.db_path_input.text().strip(),
             "line_settings_path": str(self.line_settings_path),
-            "yolo_version": self.yolo_combo.currentText(),
             "tracker_config": tracker_config,
             "flush_interval_minutes": int(self.flush_combo.currentText()),
             "max_idle_frames": int(self.max_idle_frames_spin.value()),

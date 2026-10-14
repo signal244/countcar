@@ -129,6 +129,11 @@ def _auto_device(device_cfg: str) -> str:
 MIN_AUTO_GPU_MEMORY_GB = 4.0
 
 
+def gpu_info() -> tuple[str, float]:
+    """(NVIDIA GPU 이름, 메모리 GB). 쓸 수 있는 GPU 가 없으면 ("", 0)."""
+    return _gpu_info()
+
+
 @lru_cache(maxsize=None)
 def _gpu_info() -> tuple[str, float]:
     try:
