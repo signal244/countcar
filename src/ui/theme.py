@@ -37,15 +37,15 @@ QLabel[role="caption"] {
     border-radius: 6px;
     padding: 3px 10px;
     font-weight: 700;
-    min-height: 30px;
+    min-height: 22px;
 }
 QCheckBox {
     color: #dfe7f3;
     spacing: 8px;
 }
 QCheckBox::indicator {
-    width: 26px;
-    height: 26px;
+    width: 20px;
+    height: 20px;
 }
 QCheckBox[role="caption"] {
     background: #2b3342;
@@ -54,11 +54,11 @@ QCheckBox[role="caption"] {
     border-radius: 6px;
     padding: 3px 10px;
     font-weight: 700;
-    min-height: 30px;
+    min-height: 22px;
 }
 QCheckBox[role="caption"]::indicator {
-    width: 26px;
-    height: 26px;
+    width: 20px;
+    height: 20px;
 }
 
 /* ─── QGroupBox 카드 스타일 + 상단 악센트 바 ─── */
@@ -66,8 +66,8 @@ QGroupBox {
     background: #1e2838;
     border: 1px solid #2d3a50;
     border-radius: 8px;
-    margin-top: 10px;
-    padding-top: 14px;
+    margin-top: 8px;
+    padding-top: 10px;
     color: #cfd8e6;
     font-weight: bold;
 }
@@ -106,7 +106,7 @@ QPushButton {
     border: 1px solid #3a4a60;
     border-radius: 4px;
     padding: 3px 10px;
-    min-height: 30px;
+    min-height: 22px;
     font-weight: 700;
 }
 QPushButton:disabled {
@@ -189,7 +189,7 @@ QPushButton[btnType="danger"]:pressed {
 
 /* ─── 입력 크기 제한 ─── */
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
-    min-height: 30px;
+    min-height: 22px;
 }
 QSpinBox, QDoubleSpinBox {
     min-width: 96px;
@@ -241,7 +241,9 @@ QGroupBox QLineEdit[readonly="true"] {
 #stepLine[stepState="pending"] { background: #3a4656; }
 
 /* ─── StatusBar (하단) ─── */
-#statusBar {
+#statusBar { background: transparent; }
+#statusChip {
+    min-height: 26px;
     background: #1e2838;
     border: 1px solid #2d3a50;
     border-radius: 6px;
@@ -250,7 +252,7 @@ QGroupBox QLineEdit[readonly="true"] {
 #statusDot[dotState="ok"]   { color: #4ade80; }
 #statusDot[dotState="warn"] { color: #f59e0b; }
 #statusDot[dotState="off"]  { color: #5a6a80; }
-#statusText { color: #a0b0c8; font-size: 11px; }
+#statusText { color: #c8d4e6; font-weight: 700; }
 
 /* ─── QProgressBar ─── */
 QProgressBar {

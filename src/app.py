@@ -44,7 +44,7 @@ from src.pipeline.image_extractor import (
     extract_frames,
     next_start_index,
 )
-from src.config.runtime import effective_tracker, gpu_info, plan_runtime
+from src.config.runtime import MIN_AUTO_GPU_MEMORY_GB, effective_tracker, gpu_info, plan_runtime
 from src.pipeline.track_merge import merge_params_from_config
 from src.services.colab_export import (
     build_colab_cell,
@@ -64,7 +64,6 @@ from src.ui.widgets import (
     WorkflowStepper,
     apply_button_tooltips,
     fit_to_screen,
-    section_divider,
     wrap_in_scroll,
 )
 from src.ui.video_selector import select_video
@@ -232,7 +231,7 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(18, 18, 18, 18)
-        main_layout.setSpacing(12)
+        main_layout.setSpacing(10)
 
         main_layout.addWidget(self._header())
         main_layout.addWidget(self._session_video_box())
@@ -267,7 +266,7 @@ class MainWindow(QMainWindow):
         box = QGroupBox("📍 교차로 · 영상")
         box.setObjectName("groupTeal")
         layout = QGridLayout()
-        layout.setVerticalSpacing(8)
+        layout.setVerticalSpacing(6)
         layout.setHorizontalSpacing(10)
 
         # Recover junction/session defaults from legacy session_id when needed.
@@ -406,7 +405,7 @@ class MainWindow(QMainWindow):
         box = QGroupBox("⚙️ 분석 설정")
         box.setObjectName("groupTeal")
         layout = QGridLayout()
-        layout.setVerticalSpacing(8)
+        layout.setVerticalSpacing(6)
         layout.setHorizontalSpacing(12)
 
         # FPS / Head / Tail
@@ -440,10 +439,11 @@ class MainWindow(QMainWindow):
             self.runtime_combo.addItem(label, value)
         index = self.runtime_combo.findData(str(self.cfg_defaults.get("runtime_mode", "auto")).lower())
         self.runtime_combo.setCurrentIndex(max(0, index))
-        self.runtime_combo.setToolTip(
+        self._runtime_tip_base = (
             "자동: NVIDIA GPU 가 있으면 .pt 를 GPU 로, 없으면 같은 이름의 OpenVINO 변환 모델을 CPU 로 실행.\n"
             "Colab 코드 생성은 이 선택과 관계없이 항상 .pt + GPU 로 내보낸다."
         )
+        self.runtime_combo.setToolTip(self._runtime_tip_base)
         self.runtime_combo.currentIndexChanged.connect(lambda _i: self._update_runtime_label())
         self.precision_combo = QComboBox()
         self.precision_combo.addItem("FP32", "fp32")
@@ -455,8 +455,6 @@ class MainWindow(QMainWindow):
             "결과는 사실상 같습니다. CPU(OpenVINO) 모드에서는 쓰이지 않습니다."
         )
         self.precision_combo.currentIndexChanged.connect(lambda _i: self._update_runtime_label())
-        self.runtime_label = QLabel("")
-        self.runtime_label.setWordWrap(True)
 
         # Confidence
         self.conf_input = QDoubleSpinBox()
@@ -498,6 +496,7 @@ class MainWindow(QMainWindow):
         db_path_btn.clicked.connect(self._choose_detect_db)
         try:
             self.db_path_input.editingFinished.connect(lambda: setattr(self, "_detect_db_user_set", True))
+            self.db_path_input.textChanged.connect(lambda _t: self._update_status_bar())
         except Exception:
             logger.debug("Suppressed error", exc_info=True)
 
@@ -531,32 +530,48 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.conf_input, row, 3)
         layout.addWidget(self._cap("DB 갱신 간격(분)"), row, 4)
         layout.addWidget(self.flush_combo, row, 5)
-        layout.addWidget(self._cap("ID 종료(프레임)"), row, 6)
-        layout.addWidget(self.max_idle_frames_spin, row, 7)
 
         row += 1
         layout.addWidget(self._cap("모델"), row, 0)
-        layout.addWidget(self.model_combo, row, 1, 1, 4)
-        layout.addWidget(model_classes_btn, row, 5)
-        layout.addWidget(self._cap("Tracker"), row, 6)
-        layout.addWidget(self.tracker_combo, row, 7)
+        layout.addWidget(self.model_combo, row, 1, 1, 3)
+        layout.addWidget(self._cap("Tracker"), row, 4)
+        layout.addWidget(self.tracker_combo, row, 5)
 
         row += 1
         layout.addWidget(self._cap("실행 모드"), row, 0)
         layout.addWidget(self.runtime_combo, row, 1)
-        layout.addWidget(self.runtime_label, row, 2, 1, 4)
-        layout.addWidget(self._cap("정밀도"), row, 6)
-        layout.addWidget(self.precision_combo, row, 7)
+        layout.addWidget(self._cap("정밀도"), row, 2)
+        layout.addWidget(self.precision_combo, row, 3)
+        layout.addWidget(self._cap("ID 종료(프레임)"), row, 4)
+        layout.addWidget(self.max_idle_frames_spin, row, 5)
 
         row += 1
         layout.addWidget(self._cap("탐지 차종"), row, 0)
-        layout.addWidget(self.detect_classes_label, row, 1, 1, 7)
+        layout.addWidget(self.detect_classes_label, row, 1, 1, 4)
+        layout.addWidget(model_classes_btn, row, 5)
 
         row += 1
         layout.addWidget(self._cap("감지 DB 경로"), row, 0)
         layout.addWidget(self.db_path_input, row, 1, 1, 4)
         layout.addWidget(db_path_btn, row, 5)
-        layout.addWidget(QLabel(""), row, 6, 1, 2)
+
+        # 오른쪽 빈 칸: 실행 버튼을 두 칸씩, 그 아래 모델/DB/GPU 상태를 세로로 둔다.
+        self.status_bar = StatusBar(vertical=True)
+        self.status_bar.add_item("model", "모델: –", "off")
+        self.status_bar.add_item("db", "DB: –", "off")
+        self.status_bar.add_item("gpu", "GPU: –", "off")
+        self._update_status_bar()
+
+        tools = QGridLayout()
+        tools.setHorizontalSpacing(8)
+        tools.setVerticalSpacing(6)
+        buttons = self._tool_buttons()
+        for i, btn in enumerate(buttons):
+            tools.addWidget(btn, i // 2, i % 2)
+        tools.addWidget(self.status_bar, (len(buttons) + 1) // 2, 0, 1, 2)
+        tools.setRowStretch((len(buttons) + 1) // 2 + 1, 1)
+        layout.addLayout(tools, 0, 6, row + 1, 1)
+        layout.setColumnStretch(7, 1)
 
         box.setLayout(layout)
         return box
@@ -566,7 +581,7 @@ class MainWindow(QMainWindow):
         box = QGroupBox("📊 카운팅 설정")
         box.setObjectName("groupBlue")
         layout = QGridLayout()
-        layout.setVerticalSpacing(8)
+        layout.setVerticalSpacing(6)
         layout.setHorizontalSpacing(12)
 
         # DB / Lines / Output
@@ -651,9 +666,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.count_analysis_basis_combo, row, 3, 1, 5)
         layout.addWidget(self.count_classes_btn, row, 8)
 
-        row += 1
-        # Row 4: spacer.
-        layout.addWidget(QLabel(""), row, 6, 1, 3)
         # Stretch input columns more than fixed-size button columns.
         layout.setColumnStretch(1, 2)
         layout.setColumnStretch(2, 1)
@@ -663,32 +675,18 @@ class MainWindow(QMainWindow):
         box.setLayout(layout)
         return box
 
-    def _buttons_row(self) -> QVBoxLayout:
-        outer = QVBoxLayout()
-        outer.setSpacing(8)
-
-        # ── 구분선 ──
-        outer.addWidget(section_divider("▼ 실행"))
-
-        # ── Row 1: Colab 코드 생성 / 설정 저장 / 차종 미리보기 ──
+    def _tool_buttons(self) -> list[QPushButton]:
         colab_btn = QPushButton("📋 Colab 코드 생성")
         colab_btn.setProperty("btnType", "secondary")
         colab_btn.clicked.connect(self.on_export_colab)
 
         save_btn = QPushButton("💾 설정 저장")
+        save_btn.setToolTip("지금 화면의 설정을 저장해 다음에 프로그램을 켤 때 그대로 불러옵니다. 탐지는 하지 않습니다.")
         save_btn.clicked.connect(self._save_config)
 
         preview_vehicle_btn = QPushButton("🔍 차종 미리보기")
         preview_vehicle_btn.clicked.connect(self.on_preview_vehicle)
 
-        row1 = QHBoxLayout()
-        row1.addWidget(colab_btn)
-        row1.addWidget(save_btn)
-        row1.addWidget(preview_vehicle_btn)
-        row1.addStretch()
-        outer.addLayout(row1)
-
-        # ── Row 2: 궤적보기/수정 / 교차로 카운팅 / 접근로 카운팅 ──
         traj_btn = QPushButton("👁 궤적보기/수정")
         traj_btn.setProperty("btnType", "secondary")
         traj_btn.clicked.connect(self.on_show_trajectories)
@@ -700,13 +698,11 @@ class MainWindow(QMainWindow):
         approach_btn = QPushButton("📐 접근로 카운팅")
         approach_btn.setProperty("btnType", "secondary")
         approach_btn.clicked.connect(self.on_count_approach)
+        return [colab_btn, save_btn, preview_vehicle_btn, traj_btn, count_btn, approach_btn]
 
-        row2 = QHBoxLayout()
-        row2.addWidget(traj_btn)
-        row2.addWidget(count_btn)
-        row2.addWidget(approach_btn)
-        row2.addStretch()
-        outer.addLayout(row2)
+    def _buttons_row(self) -> QVBoxLayout:
+        outer = QVBoxLayout()
+        outer.setSpacing(6)
 
         # ── 로컬실행 그룹 (반투명) ──
         local_box = QGroupBox("🖥️ 영상분석 및 궤적저장 (로컬실행)")
@@ -717,6 +713,7 @@ class MainWindow(QMainWindow):
 
         detect_btn = QPushButton("▶ 로컬 감지/궤적 저장(DB)")
         detect_btn.setProperty("btnType", "secondary")
+        detect_btn.setToolTip("지금 화면의 설정으로 선택한 영상 하나를 탐지·추적해 DB 에 저장합니다.")
         detect_btn.clicked.connect(self.on_run)
 
         batch_btn = QPushButton("📂 일괄 탐지(여러 영상)")
@@ -727,34 +724,23 @@ class MainWindow(QMainWindow):
         extract_btn = QPushButton("🖼 Extract Images + Labels")
         extract_btn.clicked.connect(self.on_extract_images)
 
-        gpu_label = QLabel("GPU 가 없으면 CPU(변환 모델)로 실행")
-        gpu_label.setStyleSheet("color: #f59e0b; font-weight: 600;")
+        # 이 PC 의 GPU 상태에 맞는 권장 실행 방식(_update_status_bar 가 채운다).
+        self.gpu_hint_label = QLabel("")
 
         local_row = QHBoxLayout()
         local_row.addWidget(detect_btn)
         local_row.addWidget(batch_btn)
         local_row.addWidget(extract_btn)
-        local_row.addWidget(gpu_label)
-        local_row.addStretch()
-        local_box.setLayout(local_row)
-        outer.addWidget(local_box)
-
-        # ── 하단: StatusBar + 종료 ──
-        self.status_bar = StatusBar()
-        self.status_bar.add_item("model", "모델: –", "off")
-        self.status_bar.add_item("db", "DB: –", "off")
-        self.status_bar.add_item("gpu", "GPU: –", "off")
-        self._update_status_bar()
-
         quit_btn = QPushButton("종료")
         quit_btn.setProperty("btnType", "danger")
         quit_btn.setFixedWidth(80)
         quit_btn.clicked.connect(self.on_quit_program)
 
-        bottom_row = QHBoxLayout()
-        bottom_row.addWidget(self.status_bar, stretch=1)
-        bottom_row.addWidget(quit_btn)
-        outer.addLayout(bottom_row)
+        local_row.addWidget(self.gpu_hint_label)
+        local_row.addStretch()
+        local_row.addWidget(quit_btn)
+        local_box.setLayout(local_row)
+        outer.addWidget(local_box)
 
         return outer
 
@@ -1058,15 +1044,31 @@ class MainWindow(QMainWindow):
         else:
             self.status_bar.update_item("db", "DB: –", "off")
         # GPU
-        try:
-            import torch
-            if torch.cuda.is_available():
-                gpu_name = torch.cuda.get_device_name(0)
-                self.status_bar.update_item("gpu", f"GPU: {gpu_name}", "ok")
-            else:
-                self.status_bar.update_item("gpu", "GPU: 없음", "off")
-        except Exception:
-            self.status_bar.update_item("gpu", "GPU: 확인불가", "off")
+        gpu_name, gpu_mem = gpu_info()
+        if gpu_name:
+            self.status_bar.update_item("gpu", f"GPU: {gpu_name} ({gpu_mem:.0f}GB)", "ok")
+        else:
+            self.status_bar.update_item("gpu", "GPU: 없음", "off")
+        self._update_gpu_hint(gpu_name, gpu_mem)
+
+    def _update_gpu_hint(self, gpu_name: str, gpu_mem: float) -> None:
+        """영상분석 박스에 이 PC 에서 권장하는 실행 방식을 짧게 보인다."""
+        if not hasattr(self, "gpu_hint_label"):
+            return
+        if gpu_name and gpu_mem >= MIN_AUTO_GPU_MEMORY_GB:
+            text, color = "✔ GPU 탐지됨 · GPU 실행 권장", "#4ade80"
+            tip = f"{gpu_name} ({gpu_mem:.0f}GB) 로 .pt 모델을 바로 실행합니다."
+        elif gpu_name:
+            text, color = f"⚠ GPU 메모리 부족({gpu_mem:.0f}GB) · CPU 실행 권장", "#f59e0b"
+            tip = (f"{gpu_name} 는 메모리가 {MIN_AUTO_GPU_MEMORY_GB:.0f}GB 미만이라 자동 모드에서는 CPU(변환 모델)로 실행합니다. "
+                   "2시간 영상은 오래 걸리므로 GPU PC 나 Colab 사용을 권장합니다.")
+        else:
+            text, color = "⚠ GPU 없음 · CPU 실행 권장", "#f59e0b"
+            tip = ("NVIDIA GPU 를 찾지 못했습니다(또는 GPU 용 PyTorch 미설치). CPU(변환 모델)로 실행하며 느립니다. "
+                   "2시간 영상은 GPU PC 나 Colab 사용을 권장합니다.")
+        self.gpu_hint_label.setText(text)
+        self.gpu_hint_label.setToolTip(tip)
+        self.gpu_hint_label.setStyleSheet(f"color: {color}; font-weight: 600;")
 
     # ------------------------------------------------------------------ 모델/차종
 
@@ -1116,11 +1118,12 @@ class MainWindow(QMainWindow):
 
     def _update_runtime_label(self) -> None:
         """선택한 모델과 실행 모드로 이 PC 에서 실제로 어떻게 돌지 보여준다."""
-        if not hasattr(self, "runtime_label") or not hasattr(self, "tracker_combo"):
+        self._update_status_bar()
+        if not hasattr(self, "runtime_combo") or not hasattr(self, "tracker_combo"):
             return
+        self.runtime_combo.setToolTip(self._runtime_tip_base)
         model_path = self._current_model_path()
         if not model_path:
-            self.runtime_label.setText("")
             return
         try:
             plan = plan_runtime(
@@ -1130,7 +1133,6 @@ class MainWindow(QMainWindow):
             )
         except Exception:
             logger.debug("실행 모드 판단 실패", exc_info=True)
-            self.runtime_label.setText("")
             return
         selected = str(self.tracker_combo.currentData() or DEFAULT_TRACKER)
         effective = Path(effective_tracker(plan, selected, str(self.cfg_defaults.get("cpu_tracker_config") or ""))).as_posix()
@@ -1138,7 +1140,7 @@ class MainWindow(QMainWindow):
         fp16 = getattr(self, "precision_combo", None) is not None and self.precision_combo.currentData() == "fp16"
         gpu_name, gpu_mem = gpu_info()
 
-        # 모델·추적은 바로 위 칸에 보이므로 여기서는 "어디서, 얼마나 빨리 도는지"만 한 줄로 보인다.
+        # 화면에는 따로 표시하지 않고 실행 모드 칸에 마우스를 올리면 보인다.
         slow = False
         if plan.mode == "gpu":
             text = f"GPU ({gpu_name or plan.device})" + (" · FP16" if fp16 else "")
@@ -1149,15 +1151,13 @@ class MainWindow(QMainWindow):
             slow = True
             reason = f"GPU 메모리 부족({gpu_mem:.0f}GB)" if gpu_name else "GPU 없음"
             text = f"⚠ {reason} → CPU 실행 (매우 느림)"
-        tip = [f"실제 실행: {plan.label}" + (" · FP16" if fp16 and plan.mode == "gpu" else ""), f"추적: {tracker}"]
+        tip = [self._runtime_tip_base, "", f"이 PC: {text}", f"실제 실행: {plan.label}" + (" · FP16" if fp16 and plan.mode == "gpu" else ""), f"추적: {tracker}"]
         if slow:
             tip.append("NVIDIA GPU 를 찾지 못했거나(또는 GPU 용 PyTorch 가 설치되지 않음) 메모리가 4GB 미만이라 "
                        "CPU 로 돕니다. 2시간 영상이면 몇 시간 이상 걸릴 수 있어 GPU PC 나 Colab 사용을 권장합니다.")
         elif plan.warning:
             tip.append(plan.warning)
-        self.runtime_label.setText(text)
-        self.runtime_label.setToolTip("\n".join(tip))
-        self.runtime_label.setStyleSheet("color: #f59e0b; font-weight: 600;" if slow else "")
+        self.runtime_combo.setToolTip("\n".join(tip))
 
     def _update_detect_classes_label(self) -> None:
         """'탐지 차종' 줄에 현재 선택 상태를 요약해 보여준다."""

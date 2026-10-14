@@ -219,26 +219,33 @@ class StatusBar(QWidget):
     dotState: "ok" (green) / "warn" (orange) / "off" (gray)
     """
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, parent: QWidget | None = None, vertical: bool = False):
         super().__init__(parent)
         self.setObjectName("statusBar")
-        self._layout = QHBoxLayout()
-        self._layout.setContentsMargins(14, 6, 14, 6)
-        self._layout.setSpacing(16)
+        self._layout = QVBoxLayout() if vertical else QHBoxLayout()
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(6 if vertical else 8)
+        # 항목은 왼쪽(세로면 위)부터 붙이고 남는 공간은 끝 여백으로 둔다(창이 넓어도 퍼지지 않게).
+        self._layout.addStretch(1)
         self._items: dict[str, tuple[QLabel, QLabel]] = {}
         self.setLayout(self._layout)
 
     def add_item(self, key: str, label: str, state: str = "off") -> None:
+        chip = QFrame()
+        chip.setObjectName("statusChip")
         dot = QLabel("●")
         dot.setObjectName("statusDot")
         dot.setProperty("dotState", state)
         text = QLabel(label)
         text.setObjectName("statusText")
-        pair = QHBoxLayout()
+        text.setToolTip(label)
+        pair = QHBoxLayout(chip)
+        pair.setContentsMargins(8, 2, 10, 2)
         pair.setSpacing(5)
         pair.addWidget(dot)
         pair.addWidget(text)
-        self._layout.addLayout(pair)
+        pair.addStretch(1)
+        self._layout.insertWidget(self._layout.count() - 1, chip)
         self._items[key] = (dot, text)
 
     def update_item(
@@ -249,6 +256,7 @@ class StatusBar(QWidget):
         dot, text = self._items[key]
         if label is not None:
             text.setText(label)
+            text.setToolTip(label)
         if state is not None:
             dot.setProperty("dotState", state)
             dot.style().unpolish(dot)
