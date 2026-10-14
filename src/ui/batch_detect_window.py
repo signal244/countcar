@@ -17,6 +17,7 @@ from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -31,7 +32,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from src.config.model_profiles import list_model_files
+from src.config.model_profiles import ModelProfileStore, list_model_files
+from src.ui.class_dialogs import DetectClassDialog
 from src.services.batch_detection import (
     BatchJob,
     db_path_for,
@@ -46,8 +48,12 @@ from src.ui.widgets import apply_button_tooltips, fit_to_screen
 
 logger = logging.getLogger(__name__)
 
-COL_VIDEO, COL_JUNCTION, COL_SESSION, COL_DB, COL_MODEL, COL_IMGSZ, COL_STATUS = range(7)
-HEADERS = ["영상", "교차로명", "세션명", "저장 DB (자동)", "모델", "이미지 크기", "상태"]
+COL_VIDEO, COL_JUNCTION, COL_SESSION, COL_DB, COL_MODEL, COL_CLASSES, COL_IMGSZ, COL_STATUS = range(8)
+HEADERS = ["영상", "교차로명", "세션명", "저장 DB (자동)", "모델", "탐지 차종", "이미지 크기", "상태"]
+# 처음 열 폭(사용자가 머리글 경계를 끌어 바꿀 수 있다). 마지막 '상태' 열은 남는 폭을 쓴다.
+COLUMN_WIDTHS = {COL_VIDEO: 260, COL_JUNCTION: 130, COL_SESSION: 170, COL_DB: 190,
+                 COL_MODEL: 170, COL_CLASSES: 190, COL_IMGSZ: 100}
+DEFAULT_SESSION = "기본"   # 파일 이름에서 세션명을 못 읽으면 넣는 값(표에서 고친다)
 CURRENT = "(현재 설정)"
 IMGSZ_CHOICES = [CURRENT, "auto", "640", "960", "1280", "1920"]
 VIDEO_FILTER = "영상 (*.mp4 *.avi *.mkv *.mov *.m4v *.ts);;모든 파일 (*)"
@@ -104,7 +110,8 @@ class BatchWorker(QThread):
 
 class BatchDetectWindow(QDialog):
     def __init__(self, cfg_path: Path, base_overrides_fn: Callable[[], Dict],
-                 is_busy_fn: Callable[[], bool] = lambda: False, parent=None):
+                 is_busy_fn: Callable[[], bool] = lambda: False, parent=None,
+                 profile_store: Optional[ModelProfileStore] = None):
         super().__init__(parent)
         self.setWindowTitle("일괄 탐지 (객체 탐지 + 궤적 저장)")
         self.setStyleSheet(DARK_DIALOG_STYLE)
@@ -113,6 +120,8 @@ class BatchDetectWindow(QDialog):
         self.is_busy_fn = is_busy_fn
         self.worker: Optional[BatchWorker] = None
         self.frame_totals: Dict[int, int] = {}
+        # 모델별 탐지 차종 설정(메인 창과 같은 저장소를 쓴다).
+        self.profile_store = profile_store or ModelProfileStore(Path("config/model_profiles.json"))
         self._build_ui()
         fit_to_screen(self, 1250, 650)
 
@@ -151,9 +160,13 @@ class BatchDetectWindow(QDialog):
         self.table.setHorizontalHeaderLabels(HEADERS)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(COL_VIDEO, QHeaderView.ResizeMode.Stretch)
-        for col in (COL_JUNCTION, COL_SESSION, COL_DB, COL_MODEL, COL_IMGSZ, COL_STATUS):
-            header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        # 머리글 경계를 끌어 열 폭을 바꿀 수 있게 한다.
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
+        # 줄 안의 콤보·버튼이 아래 줄을 덮지 않게 줄 높이를 넉넉히 둔다.
+        self.table.verticalHeader().setDefaultSectionSize(36)
+        for col, width in COLUMN_WIDTHS.items():
+            self.table.setColumnWidth(col, width)
         self.table.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self.table, stretch=3)
 
@@ -192,7 +205,7 @@ class BatchDetectWindow(QDialog):
             QAbstractItemView.EditTrigger.NoEditTriggers if running
             else QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed)
         for r in range(self.table.rowCount()):
-            for col in (COL_MODEL, COL_IMGSZ):
+            for col in (COL_MODEL, COL_CLASSES, COL_IMGSZ):
                 widget = self.table.cellWidget(r, col)
                 if widget is not None:
                     widget.setEnabled(not running)
@@ -213,6 +226,7 @@ class BatchDetectWindow(QDialog):
 
     def add_video(self, video: Path) -> None:
         junction, session = parse_video_name(video)
+        session = session or DEFAULT_SESSION   # 늘 채워 두고 표에서 고치게 한다
         row = self.table.rowCount()
         self.table.blockSignals(True)
         self.table.insertRow(row)
@@ -233,9 +247,79 @@ class BatchDetectWindow(QDialog):
         model_combo = self._model_combo()
         model_combo.currentIndexChanged.connect(lambda _i, combo=model_combo: self._on_model_changed(combo))
         self.table.setCellWidget(row, COL_MODEL, model_combo)
+        classes_btn = QPushButton("")
+        classes_btn.setProperty("class_ids", None)
+        classes_btn.setStyleSheet("QPushButton { padding: 1px 6px; min-height: 0px; }")   # 표 줄 높이에 맞춤
+        classes_btn.clicked.connect(lambda _c=False, btn=classes_btn: self._on_pick_classes(btn))
+        self.table.setCellWidget(row, COL_CLASSES, classes_btn)
         self.table.setCellWidget(row, COL_IMGSZ, self._imgsz_combo())
         self.table.blockSignals(False)
+        self._update_classes_label(row)
         self._refresh_row(row)
+
+    # ------------------------------------------------------------------ 탐지 차종
+    def _row_model_path(self, row: int) -> str:
+        """이 줄이 실제로 쓸 모델(현재 설정이면 메인 창 모델)."""
+        model = self.table.cellWidget(row, COL_MODEL).currentData() or ""
+        if model:
+            return str(model)
+        try:
+            return str(self.base_overrides_fn().get("model_path") or "")
+        except Exception:
+            logger.debug("메인 창 모델 경로 읽기 실패", exc_info=True)
+            return ""
+
+    def _row_class_ids(self, row: int) -> Optional[List[int]]:
+        """이 줄에서 직접 고른 차종. 없으면 None(모델별 저장값 또는 자동)."""
+        ids = self.table.cellWidget(row, COL_CLASSES).property("class_ids")
+        return [int(c) for c in ids] if ids else None
+
+    def _update_classes_label(self, row: int) -> None:
+        btn = self.table.cellWidget(row, COL_CLASSES)
+        model = self._row_model_path(row)
+        profile = self.profile_store.get_cached(model) if model else None
+        saved = list(profile.detect_class_ids) if profile and profile.detect_class_ids else None
+        ids = self._row_class_ids(row) or saved
+        if ids and profile and profile.classes:
+            names = [str(profile.classes.get(int(c), c)) for c in ids]
+            text = f"{len(names)}종: " + ", ".join(names)
+        elif ids:
+            text = f"{len(ids)}종 선택"
+        else:
+            text = "자동 (차량만)"
+        btn.setText(text if len(text) <= 26 else text[:25] + "…")
+        model_name = Path(model).name if model else "-"
+        btn.setToolTip(f"모델: {model_name}\n{text}\n누르면 이 영상(모델)에서 탐지할 차종을 고릅니다.")
+
+    def _on_pick_classes(self, btn: QPushButton) -> None:
+        row = next((r for r in range(self.table.rowCount()) if self.table.cellWidget(r, COL_CLASSES) is btn), -1)
+        if row < 0:
+            return
+        model = self._row_model_path(row)
+        if not model:
+            QMessageBox.warning(self, "모델 없음", "이 줄의 모델을 먼저 고르세요.")
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            profile = self.profile_store.get(model)   # 처음 한 번은 모델 파일을 열어 클래스를 읽는다
+        finally:
+            QApplication.restoreOverrideCursor()
+        if not profile.has_classes:
+            QMessageBox.warning(self, "클래스 없음", f"모델에서 클래스를 읽지 못했습니다:\n{model}")
+            return
+        chosen = self._row_class_ids(row)
+        if chosen:
+            profile.detect_class_ids = list(chosen)
+        dialog = DetectClassDialog(profile, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        ids = dialog.selected_class_ids()
+        btn.setProperty("class_ids", ids)
+        # 모델별 기본값으로도 저장한다(메인 창 '탐지 차종 선택'과 같은 설정).
+        profile.detect_class_ids = list(ids)
+        self.profile_store.put(profile)
+        for r in range(self.table.rowCount()):
+            self._update_classes_label(r)
 
     def _refresh_row(self, row: int) -> None:
         junction = self._text(row, COL_JUNCTION)
@@ -266,7 +350,13 @@ class BatchDetectWindow(QDialog):
         video = Path(self.table.item(row, COL_VIDEO).data(Qt.ItemDataRole.UserRole))
         model = self.table.cellWidget(row, COL_MODEL).currentData() or ""
         imgsz = self.table.cellWidget(row, COL_IMGSZ).currentData() or ""
-        return BatchJob(video, junction, session, model, imgsz)
+        class_ids = self._row_class_ids(row)
+        if class_ids is None and model:
+            # 다른 모델을 고른 줄은 그 모델에 저장된 탐지 차종을 쓴다(없으면 자동).
+            profile = self.profile_store.get_cached(model)
+            if profile is not None and profile.detect_class_ids:
+                class_ids = list(profile.detect_class_ids)
+        return BatchJob(video, junction, session, model, imgsz, class_ids)
 
     def on_add(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(self, "탐지할 영상 선택", "", VIDEO_FILTER)
@@ -286,6 +376,9 @@ class BatchDetectWindow(QDialog):
         row = next((r for r in range(self.table.rowCount()) if self.table.cellWidget(r, COL_MODEL) is combo), -1)
         if row < 0:
             return
+        # 차종 번호는 모델마다 다르다. 모델을 바꾸면 이 줄에서 고른 차종은 새 모델 기준으로 다시 정한다.
+        self.table.cellWidget(row, COL_CLASSES).setProperty("class_ids", None)
+        self._update_classes_label(row)
         video = self._video_of(row)
         if sum(1 for r in range(self.table.rowCount()) if self._video_of(r) == video) < 2:
             return
@@ -317,6 +410,7 @@ class BatchDetectWindow(QDialog):
                 copy["session"] = copy["base_session"]
                 copy["auto_session"] = copy["base_session"]
                 copy["model"] = 0
+                copy["class_ids"] = None   # 차종 번호는 모델 기준이라 모델과 함께 처음 값으로 되돌린다
                 snaps.append(copy)
         self.table.setRowCount(0)
         for snap in snaps:
@@ -350,6 +444,7 @@ class BatchDetectWindow(QDialog):
             "base_session": str(self.table.item(row, COL_SESSION).data(ROLE_BASE_SESSION) or self._text(row, COL_SESSION)),
             "auto_session": str(self.table.item(row, COL_SESSION).data(ROLE_AUTO_SESSION) or ""),
             "model": self.table.cellWidget(row, COL_MODEL).currentIndex(),
+            "class_ids": self._row_class_ids(row),
             "imgsz": self.table.cellWidget(row, COL_IMGSZ).currentIndex(),
         }
 
@@ -367,6 +462,8 @@ class BatchDetectWindow(QDialog):
         model_combo.blockSignals(True)   # 복원할 때는 세션명을 다시 바꾸지 않는다
         model_combo.setCurrentIndex(snap["model"])
         model_combo.blockSignals(False)
+        self.table.cellWidget(row, COL_CLASSES).setProperty("class_ids", snap.get("class_ids"))
+        self._update_classes_label(row)
         self.table.cellWidget(row, COL_IMGSZ).setCurrentIndex(snap["imgsz"])
         self._refresh_row(row)
 

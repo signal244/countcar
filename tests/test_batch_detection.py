@@ -72,6 +72,10 @@ class BatchDetectionTests(unittest.TestCase):
         self.assertEqual(parse_video_name(r"D:\v\칠산교차로_1_오후첨두.mp4"), ("칠산교차로_1", "오후첨두"))
         self.assertEqual(parse_video_name("이름만.mp4"), ("이름만", ""))
 
+    def test_parse_video_name_falls_back_to_last_space(self):
+        self.assertEqual(parse_video_name("장유행정복지센터 오전첨두.mp4"), ("장유행정복지센터", "오전첨두"))
+        self.assertEqual(parse_video_name("경원 교차로_오후첨두.mp4"), ("경원 교차로", "오후첨두"))
+
     def test_each_junction_gets_its_own_db_and_sessions(self):
         jobs = [self.job(n) for n in ("경원교차로_오전첨두.mp4", "경원교차로_오후첨두.mp4", "봉황교사거리_오전첨두.mp4")]
         results, _ = self.run_jobs(jobs)
@@ -131,6 +135,12 @@ class BatchDetectionTests(unittest.TestCase):
         self.assertEqual(overrides["model_path"], "models/other.pt")
         self.assertEqual(overrides["allowed_classes"], "auto")  # 메인 모델 기준 번호를 쓰지 않는다
         self.assertEqual(overrides["yolo_imgsz"], 1280)
+
+    def test_per_video_class_ids_override_main_setting(self):
+        job = self.job("경원교차로_오전첨두.mp4", "models/other.pt", "")
+        job.class_ids = [1, 3]
+        self.run_jobs([job])
+        self.assertEqual(self.service.requests[0].overrides["allowed_classes"], [1, 3])
 
 
 if __name__ == "__main__":

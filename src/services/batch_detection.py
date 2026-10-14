@@ -36,6 +36,7 @@ class BatchJob:
     session: str
     model_path: str = ""   # 빈 값이면 현재 설정
     imgsz: str = ""        # 빈 값이면 현재 설정, 아니면 "auto" 또는 숫자
+    class_ids: Optional[List[int]] = None   # 탐지할 클래스 번호(이 영상의 모델 기준). None 이면 모델 기본
 
     @property
     def session_id(self) -> str:
@@ -53,12 +54,15 @@ class JobResult:
 
 
 def parse_video_name(video: str | Path) -> tuple[str, str]:
-    """`경원교차로_오전첨두` -> ("경원교차로", "오전첨두"). 밑줄이 없으면 세션명은 비운다."""
+    """`경원교차로_오전첨두` -> ("경원교차로", "오전첨두"). 밑줄이 없으면 마지막 공백으로 나눈다
+    (`장유행정복지센터 오전첨두`). 둘 다 없으면 세션명은 비운다."""
     stem = Path(str(video)).stem.strip()
-    if "_" not in stem:
-        return stem, ""
-    junction, session = stem.rsplit("_", 1)
-    return junction.strip(), session.strip()
+    for sep in ("_", " "):
+        if sep in stem:
+            junction, session = stem.rsplit(sep, 1)
+            if junction.strip() and session.strip():
+                return junction.strip(), session.strip()
+    return stem, ""
 
 
 def jobs_from_folder(folder: str | Path, names: Optional[List[str]] = None) -> tuple[List[BatchJob], List[str]]:
@@ -85,12 +89,14 @@ def jobs_to_dicts(jobs: List[BatchJob], video_path_fn: Callable[[Path], str] = s
                   model_path_fn: Callable[[str], str] = str) -> List[Dict[str, str]]:
     """작업 목록을 JSON 으로 저장할 수 있게 바꾼다(GUI -> Colab 내보내기)."""
     return [{"video": video_path_fn(j.video), "junction": j.junction, "session": j.session,
-             "model_path": model_path_fn(j.model_path) if j.model_path else "", "imgsz": j.imgsz} for j in jobs]
+             "model_path": model_path_fn(j.model_path) if j.model_path else "", "imgsz": j.imgsz,
+             "class_ids": list(j.class_ids) if j.class_ids else None} for j in jobs]
 
 
 def jobs_from_dicts(items: List[Mapping[str, object]]) -> List[BatchJob]:
     return [BatchJob(Path(str(it["video"])), str(it["junction"]), str(it["session"]),
-                     str(it.get("model_path") or ""), str(it.get("imgsz") or "")) for it in items]
+                     str(it.get("model_path") or ""), str(it.get("imgsz") or ""),
+                     [int(c) for c in it["class_ids"]] if it.get("class_ids") else None) for it in items]
 
 
 def safe_filename(name: str) -> str:
@@ -173,6 +179,9 @@ def job_overrides(job: BatchJob, base: Mapping[str, object], db_path: Path) -> D
         overrides["model_path"] = job.model_path
         # 메인 화면의 차종 번호는 메인 모델 기준이다. 다른 모델이면 모델의 차종 이름으로 다시 고른다.
         overrides["allowed_classes"] = "auto"
+    if job.class_ids:
+        # 일괄 탐지 창에서 이 영상(모델)용으로 고른 차종. 번호는 이 영상 모델 기준이다.
+        overrides["allowed_classes"] = [int(c) for c in job.class_ids]
     if job.imgsz:
         overrides["yolo_imgsz"] = "auto" if str(job.imgsz).lower() == "auto" else int(job.imgsz)
     return overrides

@@ -1745,6 +1745,7 @@ class MainWindow(QMainWindow):
                 base_overrides_fn=self._build_overrides,
                 is_busy_fn=lambda: bool(self.worker and self.worker.isRunning()),
                 parent=self,
+                profile_store=self.profile_store,
             )
             self.batch_window = window
         window.show()
