@@ -120,6 +120,7 @@ class BatchDetectWindow(QDialog):
         self.is_busy_fn = is_busy_fn
         self.worker: Optional[BatchWorker] = None
         self.frame_totals: Dict[int, int] = {}
+        self._logged_pct: Dict[int, int] = {}
         # 모델별 탐지 차종 설정(메인 창과 같은 저장소를 쓴다).
         self.profile_store = profile_store or ModelProfileStore(Path("config/model_profiles.json"))
         self._build_ui()
@@ -211,15 +212,23 @@ class BatchDetectWindow(QDialog):
                     widget.setEnabled(not running)
 
     # ------------------------------------------------------------------ 표 조작
-    def _model_combo(self) -> QComboBox:
+    @staticmethod
+    def _cell_combo() -> QComboBox:
+        # 앱 전체 스타일의 콤보 최소 폭(120px)이 좁은 열을 넘어 옆 칸(상태)을 가리지 않게 한다.
         combo = QComboBox()
+        combo.setStyleSheet("QComboBox { min-width: 0px; }")
+        combo.setMinimumWidth(0)
+        return combo
+
+    def _model_combo(self) -> QComboBox:
+        combo = self._cell_combo()
         combo.addItem(CURRENT, "")
         for path in list_model_files("models"):
             combo.addItem(path.name, str(path))
         return combo
 
     def _imgsz_combo(self) -> QComboBox:
-        combo = QComboBox()
+        combo = self._cell_combo()
         for text in IMGSZ_CHOICES:
             combo.addItem(text, "" if text == CURRENT else text)
         return combo
@@ -546,6 +555,7 @@ class BatchDetectWindow(QDialog):
                 return
 
         self.frame_totals = {i: _frame_count(j.video) for i, j in enumerate(jobs)}
+        self._logged_pct = {}
         self.log_view.clear()
         base = dict(self.base_overrides_fn())
         self.log_view.appendPlainText(f"[batch] 영상 {len(jobs)}개 시작 (기본 모델: {base.get('model_path', '')})")
@@ -576,7 +586,14 @@ class BatchDetectWindow(QDialog):
         if m and row >= 0:
             total = self.frame_totals.get(row) or 0
             if total:
-                self.table.item(row, COL_STATUS).setText(f"▶ {min(100, 100 * int(m.group(1)) // total)}%")
+                pct = min(100, 100 * int(m.group(1)) // total)
+                self.table.item(row, COL_STATUS).setText(f"▶ {pct}%")
+                # 로그가 멈춘 것처럼 보이지 않게 5% 마다 한 줄 남긴다.
+                step = pct // 5 * 5
+                if step > self._logged_pct.get(row, -1):
+                    self._logged_pct[row] = step
+                    self.log_view.appendPlainText(
+                        f"[{row + 1}] 진행 {step}% (프레임 {int(m.group(1)):,} / {total:,}) {datetime.now():%H:%M:%S}")
             return
         prefix = f"[{row + 1}] " if row >= 0 else ""
         self.log_view.appendPlainText(prefix + message)

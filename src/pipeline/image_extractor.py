@@ -123,32 +123,45 @@ def extract_frames(
     return extracted_paths
 
 
+def label_class_id(cls_raw: int, names: dict, class_mapping: dict, scheme: str = "dataset") -> Optional[int]:
+    """모델 클래스 번호 -> 라벨 txt 에 쓸 번호. 라벨에서 뺄 클래스면 None.
+
+    - scheme="dataset": 학습 데이터 기준 8클래스 번호(CLASS_NAME_TO_ID / MAPPED_NAME_TO_ID)로 바꾼다.
+      표에 없는 클래스(예: 공식 모델의 motorcycle)는 엉뚱한 번호가 되지 않게 None.
+    - scheme="model": 모델 번호를 그대로 쓴다.
+    - person 과 IGNORE_LABELS 는 어느 쪽이든 뺀다.
+    """
+    cls_name = str(names.get(cls_raw, str(cls_raw))).strip().lower()
+    mapped_name = class_mapping.get(cls_name, cls_name)
+    if cls_name in IGNORE_LABELS or mapped_name in IGNORE_LABELS:
+        return None
+    if scheme == "model":
+        return int(cls_raw)
+    for table, key in ((CLASS_NAME_TO_ID, cls_name), (CLASS_NAME_TO_ID, mapped_name), (MAPPED_NAME_TO_ID, mapped_name)):
+        cls = table.get(key)
+        if cls is not None:
+            return None if cls == 0 else int(cls)
+    return None
+
+
 def detection_to_yolo_lines(
     boxes: Iterable,
     names: dict,
     class_mapping: dict,
+    scheme: str = "dataset",
 ) -> List[str]:
     """YOLO 탐지 박스들을 YOLO 라벨 txt 줄 목록으로 변환한다.
 
     - names: 모델의 class id -> 이름 사전(label_model.names).
     - class_mapping: 원본 이름 -> 매핑 이름(category_mapping.json).
-    - person(id 0)과 IGNORE_LABELS 는 제외한다.
+    - 번호 규칙은 label_class_id 를 따른다(바꿀 수 없는 클래스는 뺀다).
     - box 는 .cls[0], .xywhn[0].tolist() 를 제공하는 객체(ultralytics Box).
     """
     lines: List[str] = []
     for box in boxes:
         try:
-            cls_raw = int(box.cls[0])
-            cls_name = str(names.get(cls_raw, str(cls_raw))).strip().lower()
-            mapped_name = class_mapping.get(cls_name, cls_name)
-            if mapped_name in IGNORE_LABELS:
-                continue
-            cls = CLASS_NAME_TO_ID.get(cls_name)
+            cls = label_class_id(int(box.cls[0]), names, class_mapping, scheme)
             if cls is None:
-                cls = CLASS_NAME_TO_ID.get(mapped_name)
-            if cls is None:
-                cls = MAPPED_NAME_TO_ID.get(mapped_name, cls_raw)
-            if cls == 0:
                 continue
             x_c, y_c, w, h = box.xywhn[0].tolist()
         except Exception:

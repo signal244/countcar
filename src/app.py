@@ -25,7 +25,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
-    QInputDialog,
     QProgressBar,
     QPushButton,
     QSizePolicy,
@@ -35,15 +34,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.config.loader import load_app_config, load_app_config_with_state, load_json, save_user_state
+from src.config.loader import load_app_config, load_app_config_with_state, save_user_state
 from src.config.model_profiles import ModelProfileStore
 from src.config.model_resolver import can_auto_download_model, ensure_model_source, resolve_model_source
 from src.db.queries import distinct_vehicle_types
-from src.pipeline.image_extractor import (
-    detection_to_yolo_lines,
-    extract_frames,
-    next_start_index,
-)
 from src.config.runtime import MIN_AUTO_GPU_MEMORY_GB, effective_tracker, gpu_info, plan_runtime
 from src.pipeline.track_merge import merge_params_from_config
 from src.services.colab_export import (
@@ -58,6 +52,7 @@ from src.ui.line_drawer import LineDrawerWindow
 from src.ui.model_selector import ModelComboBox
 from src.ui.theme import DARK_DIALOG_STYLE, MAIN_WINDOW_STYLE
 from src.ui.batch_detect_window import BatchDetectWindow
+from src.ui.extract_window import ExtractWindow
 from src.ui.vehicle_preview import VehiclePreviewWindow
 from src.ui.widgets import (
     StatusBar,
@@ -189,10 +184,10 @@ class MainWindow(QMainWindow):
         except Exception:
             logger.debug("Suppressed error", exc_info=True)
 
-        batch = getattr(self, "batch_window", None)
-        if batch is not None and batch.is_running() and not batch.close():
-            event.ignore()
-            return
+        for child in (getattr(self, "batch_window", None), getattr(self, "extract_window", None)):
+            if child is not None and child.is_running() and not child.close():
+                event.ignore()
+                return
 
         if not self._close_child_windows():
             QMessageBox.warning(self, "종료 지연", "하위 창의 백그라운드 작업이 아직 종료되지 않았습니다. 잠시 후 다시 시도하세요.")
@@ -805,242 +800,22 @@ class MainWindow(QMainWindow):
         return outer
 
     def on_extract_images(self) -> None:
-        """
-        Extract images from video and generate YOLO label txt files in one run.
-        """
-        try:
-            import cv2  # local import (env may vary)
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "OpenCV Missing", f"Failed to import cv2:\n{exc}")
-            return
-
-        video = self._get_active_video_path()
-        if not video:
-            QMessageBox.warning(self, "No Video", "Please select a video file.")
-            return
-        if not Path(video).exists():
-            QMessageBox.warning(self, "No Video", f"Video file not found:\n{video}")
-            return
-
-        start_dir_txt = ""
-        if hasattr(self, "count_output_dir_input"):
-            start_dir_txt = self.count_output_dir_input.text().strip()
-        start_dir = Path(start_dir_txt or "output").expanduser().resolve()
-        selected_dir = QFileDialog.getExistingDirectory(self, "이미지/라벨 저장 부모 폴더 선택", str(start_dir))
-        if not selected_dir:
-            return
-
-        extract_root = Path(selected_dir).expanduser()
-        try:
-            extract_root.mkdir(parents=True, exist_ok=True)
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Folder Create Failed", f"Cannot create extract root folder:\n{extract_root}\n{exc}")
-            return
-        if hasattr(self, "count_output_dir_input"):
-            self.count_output_dir_input.setText(str(extract_root))
-        images_dir = extract_root / "images"
-        images_dir.mkdir(parents=True, exist_ok=True)
-
-        junction_raw = self.junction_input.text().strip() if hasattr(self, "junction_input") else ""
-        session_raw = self.session_input.text().strip() if hasattr(self, "session_input") else ""
-        junction_safe = self._safe_filename(junction_raw) if junction_raw else ""
-        session_safe = self._safe_filename(session_raw) if session_raw else ""
-        junction_safe = re.sub(r"\s+", "_", junction_safe)
-        session_safe = re.sub(r"\s+", "_", session_safe)
-        if junction_safe and session_safe:
-            prefix = f"{junction_safe}_{session_safe}"
-        else:
-            prefix = junction_safe or session_safe or "junction"
-
-        # Popup: extraction mode
-        mode_label, ok_mode = QInputDialog.getItem(
-            self,
-            "Extract Mode",
-            "Choose frame extraction mode:",
-            ["Sample (Every 2 Sec)", "All Frames", "First N Frames"],
-            0,
-            False,
-        )
-        if not ok_mode:
-            return
-
-        first_n_limit = 0
-        if mode_label == "First N Frames":
-            n_value, ok_n = QInputDialog.getInt(
-                self,
-                "Frame Count",
-                "How many frames to extract?",
-                300,
-                1,
-                1_000_000,
-                1,
+        """여러 영상에서 학습용 이미지와 YOLO 라벨을 뽑는 창을 연다."""
+        window = getattr(self, "extract_window", None)
+        if window is None:
+            window = ExtractWindow(
+                self.cfg_defaults,
+                self.state_path,
+                main_model_fn=self._current_model_path,
+                default_conf=float(self.conf_input.value()) if hasattr(self, "conf_input") else 0.25,
+                profile_store=self.profile_store,
+                is_busy_fn=lambda: bool(self.worker and self.worker.isRunning()),
+                parent=self,
             )
-            if not ok_n:
-                return
-            first_n_limit = int(n_value)
-
-        cap = cv2.VideoCapture(str(video))
-        if not cap.isOpened():
-            QMessageBox.critical(self, "Video Open Failed", f"Cannot open video:\n{video}")
-            return
-
-        src_fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
-        if not src_fps or src_fps <= 0:
-            src_fps = 30.0
-
-        try:
-            target_fps = float(self.fps_input.value()) if hasattr(self, "fps_input") else 10.0
-        except Exception:
-            target_fps = 10.0
-        sample_extract_fps = 0.5
-
-        if mode_label == "All Frames":
-            step = 1
-        else:
-            step = max(1, int(round(src_fps / sample_extract_fps)))
-
-        # Resume numbering if files already exist.
-        start_idx = next_start_index(images_dir, prefix)
-
-        def log(msg: str) -> None:
-            try:
-                if self.log_view:
-                    self.log_view.append(str(msg))
-                app = QApplication.instance()
-                if app is not None:
-                    app.processEvents()
-            except Exception:
-                logger.debug("Suppressed error", exc_info=True)
-                return
-
-        log(
-            f"[extract:start] mode={mode_label} video={video} src_fps={src_fps:.2f} "
-            f"sample_fps={sample_extract_fps:.2f} (2 sec/frame) step={step}"
-        )
-        if first_n_limit > 0:
-            log(f"[extract:limit] first_n={first_n_limit}")
-        log(f"[extract:dir] {images_dir}")
-
-        extracted_paths = extract_frames(
-            cap,
-            images_dir,
-            prefix,
-            step,
-            first_n_limit,
-            start_idx,
-            log_cb=log,
-        )
-        log(f"[extract:done] saved={len(extracted_paths)}")
-
-        labels_dir = extract_root / "labels"
-        labels_dir.mkdir(parents=True, exist_ok=True)
-
-        model_path_text = self._current_model_path()
-        model_path = Path(model_path_text) if model_path_text else Path("models/best.pt")
-        model_source, auto_download = resolve_model_source(model_path)
-        if not model_source:
-            log("[label:warn] empty model path")
-            QMessageBox.warning(self, "Model Missing", "Label model path is empty.")
-            return
-        if not model_path.exists() and not auto_download:
-            log(f"[label:warn] model file not found: {model_path}")
-            QMessageBox.warning(self, "Model Missing", f"Label model file not found:\n{model_path}")
-            return
-
-        try:
-            from ultralytics import YOLO
-        except Exception as exc:  # noqa: BLE001
-            log(f"[label:warn] failed to import ultralytics: {exc}")
-            QMessageBox.warning(self, "ultralytics Missing", f"Failed to import ultralytics for labeling.\n{exc}")
-            return
-
-        try:
-            label_model = YOLO(str(ensure_model_source(model_path)))
-        except Exception as exc:  # noqa: BLE001
-            log(f"[label:warn] failed to load model: {model_source} ({exc})")
-            QMessageBox.warning(self, "Model Load Failed", f"Failed to load label model:\n{model_source}\n{exc}")
-            return
-
-        try:
-            conf = float(self.conf_input.value()) if hasattr(self, "conf_input") else 0.25
-        except Exception:
-            conf = 0.25
-
-        # Reuse the same class mapping policy as the main pipeline.
-        class_mapping_path = Path(self.cfg_defaults.get("class_mapping_path", "config/category_mapping.json"))
-        raw_mapping = {}
-        try:
-            if class_mapping_path.exists():
-                raw_mapping = load_json(class_mapping_path) or {}
-        except Exception as exc:  # noqa: BLE001
-            log(f"[label:warn] failed to load class mapping: {class_mapping_path} ({exc})")
-
-        class_mapping = {str(k).strip().lower(): str(v).strip().lower() for k, v in dict(raw_mapping).items()}
-
-        # Label newly extracted images first; if none extracted in this run, continue on existing images.
-        if extracted_paths:
-            target_images = extracted_paths
-        else:
-            log("[label:info] No new images extracted. Continue labeling existing images.")
-            target_images = sorted(images_dir.glob(f"{prefix}_*.jpg"))
-
-        total_images = len(target_images)
-        if total_images <= 0:
-            log("[label:info] No images found for labeling.")
-            return
-
-        labeled_count = 0
-        skipped_count = 0
-        no_det_count = 0
-        error_count = 0
-
-        log(
-            f"[label:start] images={total_images} conf={conf:.2f} model={model_source} out_dir={labels_dir}"
-        )
-
-        for idx, img_path in enumerate(target_images, start=1):
-            label_path = labels_dir / f"{img_path.stem}.txt"
-
-            try:
-                result = label_model(str(img_path), conf=conf, verbose=False)[0]
-            except Exception as exc:  # noqa: BLE001
-                error_count += 1
-                if error_count <= 5:
-                    log(f"[label:warn] infer failed: {img_path.name} ({exc})")
-                continue
-
-            boxes = result.boxes
-            if boxes is None or len(boxes) == 0:
-                no_det_count += 1
-                continue
-
-            lines = detection_to_yolo_lines(boxes, label_model.names, class_mapping)
-
-            if not lines:
-                no_det_count += 1
-                continue
-
-            try:
-                label_path.write_text("".join(lines), encoding="utf-8")
-                labeled_count += 1
-            except Exception as exc:  # noqa: BLE001
-                error_count += 1
-                if error_count <= 5:
-                    log(f"[label:warn] save failed: {img_path.name} ({exc})")
-                continue
-
-
-            if idx % 100 == 0 or idx == total_images:
-                log(
-                    f"[label:progress] [{idx}/{total_images}] saved={labeled_count} skipped={skipped_count} "
-                    f"no_det={no_det_count} errors={error_count}"
-                )
-
-        log(
-            f"[label:done] saved={labeled_count} skipped={skipped_count} "
-            f"no_det={no_det_count} errors={error_count}"
-        )
-        log(f"[label:dir] {labels_dir}")
+            self.extract_window = window
+        window.show()
+        window.raise_()
+        window.activateWindow()
 
     def on_preview_vehicle(self) -> None:
         video_path = select_video(self)
@@ -1809,6 +1584,10 @@ class MainWindow(QMainWindow):
         if batch is not None and batch.is_running():
             batch.worker.requestInterruption()
             batch.worker.wait(10000)
+        extract = getattr(self, "extract_window", None)
+        if extract is not None and extract.is_running():
+            extract.worker.flags.now = True
+            extract.worker.wait(10000)
         app = QApplication.instance()
         if app is not None:
             app.quit()
